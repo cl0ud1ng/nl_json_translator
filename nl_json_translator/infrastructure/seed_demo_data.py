@@ -6,6 +6,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from nl_json_translator.domain.location_text import normalize_location_text
+
 from .demo_map import (
     DEMO_GRID_HEIGHT,
     DEMO_GRID_WIDTH,
@@ -86,7 +88,7 @@ def seed_map_data(session: Session) -> int:
             inserted += 1
         session.flush()
         for alias in definition["aliases"]:
-            normalized_alias = alias.strip().casefold()
+            normalized_alias = normalize_location_text(alias)
             if normalized_alias not in existing_aliases:
                 session.add(
                     LocationAliasRecord(
