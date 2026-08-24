@@ -4,36 +4,12 @@ import html
 import json
 from dataclasses import dataclass
 from heapq import heappop, heappush
-from typing import Any, Iterable
+from typing import Any
+
+from .repositories.maps import MapData, MapLocationData, MapRepository
 
 
-GRID_WIDTH = 20
-GRID_HEIGHT = 14
 CELL_SIZE = 34
-
-POINTS: dict[str, dict[str, Any]] = {
-    "A": {"x": 2, "y": 2, "label": "A", "color": "#dc2626"},
-    "B": {"x": 16, "y": 3, "label": "B", "color": "#2563eb"},
-    "C": {"x": 6, "y": 11, "label": "C", "color": "#7c3aed"},
-    "lab": {"x": 17, "y": 11, "label": "Lab", "color": "#0891b2"},
-    "charging station": {"x": 1, "y": 11, "label": "Charge", "color": "#ca8a04"},
-}
-
-OBSTACLES = [
-    *({"x": x, "y": 5} for x in range(4, 11)),
-    *({"x": x, "y": 9} for x in range(8, 13)),
-    *({"x": 12, "y": y} for y in range(2, 7)),
-    *({"x": 15, "y": y} for y in range(8, 13)),
-    {"x": 5, "y": 1},
-    {"x": 5, "y": 2},
-    {"x": 5, "y": 3},
-    {"x": 6, "y": 8},
-    {"x": 7, "y": 8},
-    {"x": 12, "y": 12},
-    {"x": 13, "y": 12},
-]
-
-OBSTACLE_KEYS = {(item["x"], item["y"]) for item in OBSTACLES}
 
 
 @dataclass
@@ -43,38 +19,43 @@ class Pose:
     heading: float = 0.0
 
 
-def execute_command(command: dict[str, Any], *, start: str = "A") -> dict[str, Any]:
-    start_point = resolve_point(start) or POINTS["A"]
-    pose = Pose(x=start_point["x"], y=start_point["y"], heading=0.0)
-    actions = flatten_actions(command)
+def execute_command(
+    command: dict[str, Any], *, repository: MapRepository, start: str = "A"
+) -> dict[str, Any]:
+    map_data = repository.load()
+    start_location = require_location(map_data, start)
+    start_node = map_data.nodes[start_location.node_id]
+    pose = Pose(x=start_node.x, y=start_node.y, heading=0.0)
     timeline: list[dict[str, Any]] = []
     executed_path = [{"x": pose.x, "y": pose.y}]
     warnings: list[str] = []
 
-    for index, action in enumerate(actions, start=1):
+    for index, action in enumerate(flatten_actions(command), start=1):
         action_name = action.get("action")
         if action_name == "stop":
             timeline.append({"step": index, "action": "stop", "detail": "Execution stopped"})
             break
 
         if action_name == "go_to_goal":
-            location = action.get("params", {}).get("location", {}).get("value")
-            target = resolve_point(location)
-            if not target:
-                raise ValueError(f'Unknown location "{location}". Known points: {", ".join(POINTS)}')
-            path = astar({"x": pose.x, "y": pose.y}, target)
+            value = action.get("params", {}).get("location", {}).get("value")
+            target = require_location(map_data, value)
+            target_node = map_data.nodes[target.node_id]
+            path = astar(
+                {"x": pose.x, "y": pose.y},
+                {"x": target_node.x, "y": target_node.y},
+                map_data,
+            )
             if not path:
-                raise ValueError(f'No A* path from ({pose.x}, {pose.y}) to "{location}".')
+                raise ValueError(f'No A* path from ({pose.x}, {pose.y}) to "{target.name}".')
             if len(path) > 1:
                 pose.heading = heading_between(path[-2], path[-1])
-            pose.x = target["x"]
-            pose.y = target["y"]
+            pose.x, pose.y = target_node.x, target_node.y
             executed_path.extend(path[1:])
             timeline.append(
                 {
                     "step": index,
                     "action": "go_to_goal",
-                    "detail": f'A* route to {target["label"]}',
+                    "detail": f"A* route to {target.label}",
                     "path_length": len(path) - 1,
                     "end_pose": pose_dict(pose),
                 }
@@ -98,18 +79,14 @@ def execute_command(command: dict[str, Any], *, start: str = "A") -> dict[str, A
 
         if action_name == "move":
             params = action.get("params", {})
-            if "distance" in params:
-                distance = float(params["distance"])
-            else:
-                distance = float(params.get("linear_speed", 0)) * float(params.get("duration", 0))
+            distance = _move_distance(params)
             signed_distance = distance if params.get("is_forward", True) else -distance
-            path, stopped = project_move(pose, signed_distance)
+            path, stopped = project_move(pose, signed_distance, map_data)
             if stopped:
-                warnings.append("A move command stopped at an obstacle or map boundary.")
+                warnings.append("A move command stopped at an unavailable map edge.")
             if len(path) > 1:
                 pose.heading = heading_between(path[-2], path[-1])
-                pose.x = path[-1]["x"]
-                pose.y = path[-1]["y"]
+                pose.x, pose.y = path[-1]["x"], path[-1]["y"]
                 executed_path.extend(path[1:])
             timeline.append(
                 {
@@ -121,33 +98,37 @@ def execute_command(command: dict[str, Any], *, start: str = "A") -> dict[str, A
             )
             continue
 
-        raise ValueError(f'Unsupported action "{action_name}".')
+        raise ValueError(f'Unsupported internal action "{action_name}".')
 
     return {
         "timeline": timeline,
         "path": executed_path,
         "final_pose": pose_dict(pose),
         "warnings": warnings,
-        "svg": render_svg(executed_path, pose),
+        "svg": render_svg(executed_path, pose, map_data),
     }
 
 
-def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[dict[str, Any]]:
-    start_point = resolve_point(start) or POINTS["A"]
-    pose = Pose(x=start_point["x"], y=start_point["y"], heading=0.0)
-    actions = flatten_actions(command)
+def build_runtime_frames(
+    command: dict[str, Any], *, repository: MapRepository, start: str = "A"
+) -> list[dict[str, Any]]:
+    map_data = repository.load()
+    start_location = require_location(map_data, start)
+    start_node = map_data.nodes[start_location.node_id]
+    pose = Pose(x=start_node.x, y=start_node.y, heading=0.0)
     path_so_far = [{"x": pose.x, "y": pose.y}]
-    frames: list[dict[str, Any]] = [
+    frames = [
         runtime_frame(
             pose=pose,
             path=path_so_far,
             step=0,
             action="start",
-            detail=f'Start at {start_point["label"]}',
+            detail=f"Start at {start_location.label}",
+            map_data=map_data,
         )
     ]
 
-    for index, action in enumerate(actions, start=1):
+    for index, action in enumerate(flatten_actions(command), start=1):
         action_name = action.get("action")
         if action_name == "stop":
             frames.append(
@@ -157,18 +138,22 @@ def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[d
                     step=index,
                     action="stop",
                     detail="Execution stopped",
+                    map_data=map_data,
                 )
             )
             break
 
         if action_name == "go_to_goal":
-            location = action.get("params", {}).get("location", {}).get("value")
-            target = resolve_point(location)
-            if not target:
-                raise ValueError(f'Unknown location "{location}". Known points: {", ".join(POINTS)}')
-            path = astar({"x": pose.x, "y": pose.y}, target)
+            value = action.get("params", {}).get("location", {}).get("value")
+            target = require_location(map_data, value)
+            target_node = map_data.nodes[target.node_id]
+            path = astar(
+                {"x": pose.x, "y": pose.y},
+                {"x": target_node.x, "y": target_node.y},
+                map_data,
+            )
             if not path:
-                raise ValueError(f'No A* path from ({pose.x}, {pose.y}) to "{location}".')
+                raise ValueError(f'No A* path from ({pose.x}, {pose.y}) to "{target.name}".')
             if len(path) == 1:
                 frames.append(
                     runtime_frame(
@@ -176,16 +161,15 @@ def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[d
                         path=path_so_far,
                         step=index,
                         action="go_to_goal",
-                        detail=f'Already at {target["label"]}',
+                        detail=f"Already at {target.label}",
+                        map_data=map_data,
                     )
                 )
                 continue
-            for path_index in range(1, len(path)):
+            for path_index, current in enumerate(path[1:], start=1):
                 previous = path[path_index - 1]
-                current = path[path_index]
                 pose.heading = heading_between(previous, current)
-                pose.x = current["x"]
-                pose.y = current["y"]
+                pose.x, pose.y = current["x"], current["y"]
                 path_so_far.append({"x": pose.x, "y": pose.y})
                 frames.append(
                     runtime_frame(
@@ -193,7 +177,8 @@ def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[d
                         path=path_so_far,
                         step=index,
                         action="go_to_goal",
-                        detail=f'A* to {target["label"]} ({path_index}/{len(path) - 1})',
+                        detail=f"A* to {target.label} ({path_index}/{len(path) - 1})",
+                        map_data=map_data,
                     )
                 )
             continue
@@ -213,18 +198,16 @@ def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[d
                         step=index,
                         action="rotate",
                         detail=f"Rotate to {pose.heading:.0f} deg",
+                        map_data=map_data,
                     )
                 )
             continue
 
         if action_name == "move":
             params = action.get("params", {})
-            if "distance" in params:
-                distance = float(params["distance"])
-            else:
-                distance = float(params.get("linear_speed", 0)) * float(params.get("duration", 0))
+            distance = _move_distance(params)
             signed_distance = distance if params.get("is_forward", True) else -distance
-            path, stopped = project_move(pose, signed_distance)
+            path, stopped = project_move(pose, signed_distance, map_data)
             if len(path) == 1:
                 frames.append(
                     runtime_frame(
@@ -233,15 +216,14 @@ def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[d
                         step=index,
                         action="move",
                         detail="Move blocked" if stopped else "Move produced no displacement",
+                        map_data=map_data,
                     )
                 )
                 continue
-            for path_index in range(1, len(path)):
+            for path_index, current in enumerate(path[1:], start=1):
                 previous = path[path_index - 1]
-                current = path[path_index]
                 pose.heading = heading_between(previous, current)
-                pose.x = current["x"]
-                pose.y = current["y"]
+                pose.x, pose.y = current["x"], current["y"]
                 path_so_far.append({"x": pose.x, "y": pose.y})
                 frames.append(
                     runtime_frame(
@@ -250,6 +232,7 @@ def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[d
                         step=index,
                         action="move",
                         detail=f"Move ({path_index}/{len(path) - 1})",
+                        map_data=map_data,
                     )
                 )
             if stopped:
@@ -259,13 +242,13 @@ def build_runtime_frames(command: dict[str, Any], *, start: str = "A") -> list[d
                         path=path_so_far,
                         step=index,
                         action="move",
-                        detail="Move stopped at obstacle or boundary",
+                        detail="Move stopped at unavailable edge",
+                        map_data=map_data,
                     )
                 )
             continue
 
-        raise ValueError(f'Unsupported action "{action_name}".')
-
+        raise ValueError(f'Unsupported internal action "{action_name}".')
     return frames
 
 
@@ -276,6 +259,7 @@ def runtime_frame(
     step: int,
     action: str,
     detail: str,
+    map_data: MapData,
 ) -> dict[str, Any]:
     return {
         "step": step,
@@ -283,7 +267,7 @@ def runtime_frame(
         "detail": detail,
         "pose": pose_dict(pose),
         "path": list(path),
-        "svg": render_svg(path, pose),
+        "svg": render_svg(path, pose, map_data),
     }
 
 
@@ -299,31 +283,36 @@ def flatten_actions(command: dict[str, Any]) -> list[dict[str, Any]]:
     return [command]
 
 
-def astar(start: dict[str, int], goal: dict[str, Any]) -> list[dict[str, int]]:
+def astar(
+    start: dict[str, int], goal: dict[str, int], map_data: MapData
+) -> list[dict[str, int]]:
     start_key = (start["x"], start["y"])
     goal_key = (goal["x"], goal["y"])
+    if not map_data.node_at(start_key) or not map_data.node_at(goal_key):
+        return []
     frontier: list[tuple[int, int, tuple[int, int]]] = []
     heappush(frontier, (0, 0, start_key))
     came_from: dict[tuple[int, int], tuple[int, int] | None] = {start_key: None}
-    cost_so_far: dict[tuple[int, int], int] = {start_key: 0}
+    cost_so_far = {start_key: 0}
     counter = 0
-
     while frontier:
         _, _, current = heappop(frontier)
         if current == goal_key:
             return reconstruct_path(came_from, current)
-        for next_cell in neighbors(current):
+        for next_cell in map_data.neighbors(current):
             new_cost = cost_so_far[current] + 1
             if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]:
                 cost_so_far[next_cell] = new_cost
-                priority = new_cost + manhattan(next_cell, goal_key)
                 counter += 1
+                priority = new_cost + manhattan(next_cell, goal_key)
                 heappush(frontier, (priority, counter, next_cell))
                 came_from[next_cell] = current
     return []
 
 
-def project_move(pose: Pose, signed_distance: float) -> tuple[list[dict[str, int]], bool]:
+def project_move(
+    pose: Pose, signed_distance: float, map_data: MapData
+) -> tuple[list[dict[str, int]], bool]:
     steps = max(0, round(abs(signed_distance)))
     dx, dy = heading_vector(pose.heading if signed_distance >= 0 else pose.heading + 180)
     path = [{"x": pose.x, "y": pose.y}]
@@ -331,7 +320,7 @@ def project_move(pose: Pose, signed_distance: float) -> tuple[list[dict[str, int
     stopped = False
     for _ in range(steps):
         next_cell = (current[0] + dx, current[1] + dy)
-        if not in_bounds(next_cell) or next_cell in OBSTACLE_KEYS:
+        if not map_data.can_traverse(current, next_cell):
             stopped = True
             break
         path.append({"x": next_cell[0], "y": next_cell[1]})
@@ -339,54 +328,55 @@ def project_move(pose: Pose, signed_distance: float) -> tuple[list[dict[str, int
     return path, stopped
 
 
-def render_svg(path: list[dict[str, int]], pose: Pose) -> str:
-    width = GRID_WIDTH * CELL_SIZE
-    height = GRID_HEIGHT * CELL_SIZE
+def render_svg(path: list[dict[str, int]], pose: Pose, map_data: MapData) -> str:
+    width, height = map_data.width * CELL_SIZE, map_data.height * CELL_SIZE
     parts = [
         f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" role="img">',
         '<rect width="100%" height="100%" fill="#ffffff"/>',
     ]
-    for x in range(GRID_WIDTH + 1):
+    for x in range(map_data.width + 1):
         parts.append(f'<path d="M{x * CELL_SIZE} 0 V{height}" stroke="#e5ebf0" stroke-width="1"/>')
-    for y in range(GRID_HEIGHT + 1):
+    for y in range(map_data.height + 1):
         parts.append(f'<path d="M0 {y * CELL_SIZE} H{width}" stroke="#e5ebf0" stroke-width="1"/>')
-    for obstacle in OBSTACLES:
-        x = obstacle["x"] * CELL_SIZE + 4
-        y = obstacle["y"] * CELL_SIZE + 4
-        size = CELL_SIZE - 8
-        parts.append(f'<rect x="{x}" y="{y}" width="{size}" height="{size}" rx="4" fill="#2f3945"/>')
+    for y in range(map_data.height):
+        for x in range(map_data.width):
+            if not map_data.node_at((x, y)):
+                parts.append(
+                    f'<rect x="{x * CELL_SIZE + 4}" y="{y * CELL_SIZE + 4}" '
+                    f'width="{CELL_SIZE - 8}" height="{CELL_SIZE - 8}" rx="4" fill="#2f3945"/>'
+                )
     if len(path) > 1:
-        points = " ".join(f'{cell_center(p)["x"]},{cell_center(p)["y"]}' for p in path)
+        points = " ".join(
+            f'{cell_center(point)["x"]},{cell_center(point)["y"]}' for point in path
+        )
         parts.append(f'<polyline points="{points}" fill="none" stroke="#2474c6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>')
-    for point in POINTS.values():
-        center = cell_center(point)
-        label = html.escape(point["label"])
-        parts.append(f'<circle cx="{center["x"]}" cy="{center["y"]}" r="12" fill="{point["color"]}"/>')
+    for location in map_data.locations.values():
+        node = map_data.nodes[location.node_id]
+        center = cell_center({"x": node.x, "y": node.y})
+        label = html.escape(location.label)
+        parts.append(f'<circle cx="{center["x"]}" cy="{center["y"]}" r="12" fill="{html.escape(location.color)}"/>')
         parts.append(f'<text x="{center["x"]}" y="{center["y"] + 4}" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">{label}</text>')
     car = cell_center({"x": pose.x, "y": pose.y})
     parts.append(
         f'<g transform="translate({car["x"]} {car["y"]}) rotate({pose.heading})">'
         '<path d="M16 0 L-12 -10 L-7 0 L-12 10 Z" fill="#0f766e" stroke="#063f3b" stroke-width="2"/>'
-        '<rect x="-4" y="-5" width="8" height="10" fill="#e0f2fe"/>'
-        "</g>"
+        '<rect x="-4" y="-5" width="8" height="10" fill="#e0f2fe"/></g>'
     )
     parts.append("</svg>")
     return "".join(parts)
 
 
-def resolve_point(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, str):
-        return None
-    if value in POINTS:
-        return POINTS[value]
-    lower = value.lower().strip()
-    for name, point in POINTS.items():
-        if name.lower() == lower:
-            return point
-    return None
+def require_location(map_data: MapData, value: Any) -> MapLocationData:
+    location = map_data.resolve_location(value)
+    if location:
+        return location
+    known = ", ".join(sorted(item.name for item in map_data.locations.values()))
+    raise ValueError(f'Unknown or ambiguous location "{value}". Known locations: {known}')
 
 
-def reconstruct_path(came_from: dict[tuple[int, int], tuple[int, int] | None], current: tuple[int, int]) -> list[dict[str, int]]:
+def reconstruct_path(
+    came_from: dict[tuple[int, int], tuple[int, int] | None], current: tuple[int, int]
+) -> list[dict[str, int]]:
     path = []
     while current is not None:
         path.append({"x": current[0], "y": current[1]})
@@ -395,20 +385,12 @@ def reconstruct_path(came_from: dict[tuple[int, int], tuple[int, int] | None], c
     return path
 
 
-def neighbors(cell: tuple[int, int]) -> Iterable[tuple[int, int]]:
-    x, y = cell
-    for next_cell in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-        if in_bounds(next_cell) and next_cell not in OBSTACLE_KEYS:
-            yield next_cell
-
-
 def manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
 def heading_between(start: dict[str, int], end: dict[str, int]) -> float:
-    dx = end["x"] - start["x"]
-    dy = end["y"] - start["y"]
+    dx, dy = end["x"] - start["x"], end["y"] - start["y"]
     if dx > 0:
         return 0.0
     if dy > 0:
@@ -435,12 +417,17 @@ def normalize_heading(value: float) -> float:
     return value % 360
 
 
-def in_bounds(cell: tuple[int, int]) -> bool:
-    return 0 <= cell[0] < GRID_WIDTH and 0 <= cell[1] < GRID_HEIGHT
+def _move_distance(params: dict[str, Any]) -> float:
+    if "distance" in params:
+        return float(params["distance"])
+    return float(params.get("linear_speed", 0)) * float(params.get("duration", 0))
 
 
 def cell_center(cell: dict[str, int]) -> dict[str, float]:
-    return {"x": cell["x"] * CELL_SIZE + CELL_SIZE / 2, "y": cell["y"] * CELL_SIZE + CELL_SIZE / 2}
+    return {
+        "x": cell["x"] * CELL_SIZE + CELL_SIZE / 2,
+        "y": cell["y"] * CELL_SIZE + CELL_SIZE / 2,
+    }
 
 
 def pose_dict(pose: Pose) -> dict[str, Any]:
