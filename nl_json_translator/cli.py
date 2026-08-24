@@ -12,8 +12,8 @@ from .translator import Translator
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Translate natural-language commands to ROSGPT-style JSON.")
-    parser.add_argument("command", nargs="*", help="Command text. If omitted, interactive mode starts.")
+    parser = argparse.ArgumentParser(description="Extract a cargo transport intent from natural language.")
+    parser.add_argument("command", nargs="*", help="Transport request. If omitted, interactive mode starts.")
     parser.add_argument("--env-file", default=".env", help="Optional env file to load before reading config.")
     parser.add_argument("--model", help="DeepSeek model id. Overrides DEEPSEEK_MODEL.")
     parser.add_argument("--base-url", help="DeepSeek-compatible base URL. Overrides DEEPSEEK_BASE_URL.")
@@ -55,12 +55,12 @@ def _translate_once(translator: Translator, text: str, *, raw: bool) -> int:
     result = translator.translate(text)
     if raw:
         print(result.raw_response, file=sys.stderr)
-    print(json.dumps(result.command, ensure_ascii=False, indent=2))
+    print(json.dumps(result.intent, ensure_ascii=False, indent=2))
     return 0
 
 
 def _interactive(translator: Translator, *, raw: bool) -> int:
-    print("Enter natural-language commands. Press Ctrl-D to exit.")
+    print("Enter natural-language transport requests. Press Ctrl-D to exit.")
     while True:
         try:
             text = input("Command> ").strip()
@@ -78,4 +78,3 @@ def _interactive(translator: Translator, *, raw: bool) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

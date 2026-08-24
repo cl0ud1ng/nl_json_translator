@@ -1,48 +1,58 @@
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+from uuid import uuid4
 
 import streamlit as st
 
 from nl_json_translator.config import config_from_env, load_env_file
 from nl_json_translator.deepseek_client import DeepSeekClient
-from nl_json_translator.map_executor import POINTS, build_runtime_frames, execute_command, pretty_json
+from nl_json_translator.domain.schemas import TransportIntentDraft
+from nl_json_translator.infrastructure.database import Database, default_database_url
+from nl_json_translator.infrastructure.seed_demo_data import seed_demo_data
+from nl_json_translator.map_executor import build_runtime_frames, execute_command, pretty_json
 from nl_json_translator.prompts import build_messages
-from nl_json_translator.schema import validate_command
+from nl_json_translator.repositories.maps import MapRepository
+from nl_json_translator.services.location_resolver import LocationResolution
+from nl_json_translator.services.order_service import OrderService
 from nl_json_translator.translator import Translator
 
 
 ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_COMMAND = "go to B then A"
-FRAME_DELAY_SECONDS = 0.16
+DEFAULT_REQUEST = "从 A 取 3 箱零件送到 B"
+FRAME_DELAY_SECONDS = 0.12
 
 
 def main() -> None:
-    st.set_page_config(page_title="NL-to-JSON Car Agent", layout="wide")
+    st.set_page_config(page_title="场内货物运输 Demo", layout="wide")
     load_env_file(ROOT_DIR / ".env")
     _init_state()
+    database_url = default_database_url()
+    seed_demo_data(database_url)
+    location_names = _location_names(database_url)
 
-    st.title("NL-to-JSON Unmanned-Car Runtime")
-
+    st.title("场内货物运输意图与单车执行 Demo")
     with st.sidebar:
         model = st.selectbox("模型", ["deepseek-v4-pro", "deepseek-v4-flash"], index=0)
-        start_point = st.selectbox("起点", list(POINTS.keys()), index=0)
+        start_point = st.selectbox("车辆演示起点", location_names, index=0)
         show_prompt = st.toggle("显示 Prompt", value=False)
         st.divider()
-        st.caption("流程：自然语言 -> 结构化 JSON -> Schema 校验 -> 动态地图执行")
+        st.caption("自然语言 → 运输意图 → 地点解析 → 订单 → 单车取送路径")
         if st.button("清空结果", width="stretch"):
             st.session_state.last_result = None
             st.session_state.last_frame_index = 0
             st.rerun()
 
-    nl_command = st.text_area("自然语言命令", value=st.session_state.get("nl_command", DEFAULT_COMMAND), height=90)
-    st.session_state.nl_command = nl_command
-
-    col_run, col_replay = st.columns([1, 1])
-    run_clicked = col_run.button("运行并播放", type="primary", width="stretch")
+    request_text = st.text_area(
+        "自然语言运输请求",
+        value=st.session_state.get("request_text", DEFAULT_REQUEST),
+        height=90,
+    )
+    st.session_state.request_text = request_text
+    col_run, col_replay = st.columns(2)
+    run_clicked = col_run.button("创建订单并播放", type="primary", width="stretch")
     replay_clicked = col_replay.button(
         "重播轨迹",
         width="stretch",
@@ -52,138 +62,207 @@ def main() -> None:
     if run_clicked:
         with st.spinner("Pipeline running..."):
             st.session_state.last_result = run_pipeline(
-                nl_command=nl_command,
+                request_text=request_text,
                 model=model,
                 start_point=start_point,
+                database_url=database_url,
             )
             st.session_state.last_frame_index = 0
             st.session_state.autoplay = True
-
     if replay_clicked:
         st.session_state.last_frame_index = 0
         st.session_state.autoplay = True
-
     if st.session_state.last_result:
-        render_result(st.session_state.last_result, show_prompt, autoplay=st.session_state.get("autoplay", False))
+        render_result(
+            st.session_state.last_result,
+            show_prompt,
+            autoplay=st.session_state.get("autoplay", False),
+        )
         st.session_state.autoplay = False
 
 
 def _init_state() -> None:
     st.session_state.setdefault("last_result", None)
     st.session_state.setdefault("last_frame_index", 0)
-    st.session_state.setdefault("nl_command", DEFAULT_COMMAND)
+    st.session_state.setdefault("request_text", DEFAULT_REQUEST)
     st.session_state.setdefault("autoplay", False)
 
 
+def _location_names(database_url: str) -> list[str]:
+    database = Database(database_url)
+    try:
+        with database.session() as session:
+            names = sorted(location.name for location in MapRepository(session).load().locations.values())
+        return names or ["A"]
+    finally:
+        database.dispose()
+
+
 def run_pipeline(
-    *,
-    nl_command: str,
-    model: str,
-    start_point: str,
+    *, request_text: str, model: str, start_point: str, database_url: str
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
-        "natural_language": nl_command,
+        "natural_language": request_text,
         "model": model,
         "start_point": start_point,
         "translation": None,
         "validation": {"ok": False},
+        "order": None,
+        "internal_mission_command": None,
         "execution": None,
         "frames": [],
-        "prompt_messages": build_messages(nl_command) if nl_command.strip() else [],
+        "prompt_messages": build_messages(request_text) if request_text.strip() else [],
         "logs": [],
     }
-
+    database: Optional[Database] = None
     try:
         config = config_from_env(model=model)
-        translator = Translator(DeepSeekClient(config))
-        translated = translator.translate(nl_command)
-        command = translated.command
+        translated = Translator(DeepSeekClient(config)).translate(request_text)
+        draft = TransportIntentDraft.model_validate(translated.intent)
         result["translation"] = {
             "source": "deepseek",
-            "command": command,
+            "intent": draft.model_dump(mode="json"),
             "raw_response": translated.raw_response,
             "attempts": translated.attempts,
         }
-        result["logs"].append(f"DeepSeek translation completed in {translated.attempts} attempt(s).")
+        result["validation"] = {"ok": True, "message": "运输意图 Schema 校验通过。"}
+        result["logs"].append(f"Transport intent extracted in {translated.attempts} attempt(s).")
 
-        validate_command(command)
-        result["validation"] = {"ok": True, "message": "Schema validation passed."}
-        result["logs"].append("JSON command passed schema validation.")
+        database = Database(database_url)
+        with database.session() as session:
+            order_result = OrderService(session).create_from_intent(
+                draft, idempotency_key=f"ui-{uuid4().hex}"
+            )
+            result["order"] = {
+                "id": order_result.order_id,
+                "status": order_result.status.value,
+                "formal_order": (
+                    order_result.formal_order.model_dump(mode="json")
+                    if order_result.formal_order
+                    else None
+                ),
+                "pickup_resolution": _resolution_dict(order_result.pickup_resolution),
+                "dropoff_resolution": _resolution_dict(order_result.dropoff_resolution),
+            }
+            result["logs"].append(
+                f"Order {order_result.order_id} persisted as {order_result.status.value}."
+            )
+            if not order_result.formal_order:
+                result["logs"].append("Location confirmation is required before execution.")
+                return result
 
-        execution = execute_command(command, start=start_point)
-        frames = build_runtime_frames(command, start=start_point)
-        result["execution"] = execution
-        result["frames"] = frames
-        result["logs"].append(f"Execution produced {len(execution['timeline'])} high-level step(s).")
-        result["logs"].append(f"Runtime animation produced {len(frames)} frame(s).")
-        if execution["warnings"]:
-            result["logs"].extend(execution["warnings"])
+            formal_order = order_result.formal_order
+            internal_command = {
+                "action": "sequence",
+                "params": [
+                    {
+                        "action": "go_to_goal",
+                        "params": {
+                            "location": {
+                                "type": "str",
+                                "value": formal_order.pickup_location_id,
+                            }
+                        },
+                    },
+                    {
+                        "action": "go_to_goal",
+                        "params": {
+                            "location": {
+                                "type": "str",
+                                "value": formal_order.dropoff_location_id,
+                            }
+                        },
+                    },
+                ],
+            }
+            repository = MapRepository(session)
+            result["internal_mission_command"] = internal_command
+            result["execution"] = execute_command(
+                internal_command, repository=repository, start=start_point
+            )
+            result["frames"] = build_runtime_frames(
+                internal_command, repository=repository, start=start_point
+            )
+            result["logs"].append("Internal REPOSITION and TRANSPORT routes were simulated.")
     except Exception as exc:
         result["validation"] = {"ok": False, "message": str(exc)}
         result["logs"].append(f"Pipeline failed: {exc}")
-
+    finally:
+        if database:
+            database.dispose()
     return result
+
+
+def _resolution_dict(resolution: Optional[LocationResolution]) -> Optional[dict[str, Any]]:
+    if not resolution:
+        return None
+    return {
+        "query": resolution.query,
+        "status": resolution.status.value,
+        "location_id": resolution.location_id,
+        "candidates": [candidate.__dict__ for candidate in resolution.candidates],
+    }
 
 
 def render_result(result: dict[str, Any], show_prompt: bool, *, autoplay: bool) -> None:
     translation = result.get("translation") or {}
     validation = result.get("validation") or {}
+    order = result.get("order") or {}
     execution = result.get("execution") or {}
     frames = result.get("frames") or []
-
     st.subheader("运行结果")
     metric_cols = st.columns(4)
-    metric_cols[0].metric("翻译来源", translation.get("source", "none"))
-    metric_cols[1].metric("JSON 校验", "通过" if validation.get("ok") else "失败")
-    metric_cols[2].metric("动画帧数", len(frames))
+    metric_cols[0].metric("意图来源", translation.get("source", "none"))
+    metric_cols[1].metric("意图校验", "通过" if validation.get("ok") else "失败")
+    metric_cols[2].metric("订单状态", order.get("status", "未创建"))
     final_pose = execution.get("final_pose") or {}
     metric_cols[3].metric("最终位置", f"({final_pose.get('x', '-')}, {final_pose.get('y', '-')})")
-
     if validation.get("ok"):
         st.success(validation.get("message"))
     else:
         st.error(validation.get("message"))
-
+    if order.get("status") == "NEEDS_REVIEW":
+        st.warning("地点存在歧义，订单已进入 NEEDS_REVIEW，未执行路径。")
     render_runtime(frames, autoplay=autoplay)
 
-    tab_steps, tab_json, tab_prompt, tab_log = st.tabs(["步骤", "JSON", "Prompt", "日志"])
-
-    with tab_steps:
-        render_steps(result)
-    with tab_json:
-        command = translation.get("command")
-        if command:
-            st.code(pretty_json(command), language="json")
-        raw = translation.get("raw_response")
-        if raw:
+    tab_order, tab_intent, tab_internal, tab_prompt, tab_log = st.tabs(
+        ["订单", "运输意图", "内部执行", "Prompt", "日志"]
+    )
+    with tab_order:
+        st.json(order, expanded=True)
+    with tab_intent:
+        intent = translation.get("intent")
+        if intent:
+            st.code(pretty_json(intent), language="json")
+        if translation.get("raw_response"):
             with st.expander("Raw model response", expanded=False):
-                st.code(raw, language="json")
+                st.code(translation["raw_response"], language="json")
+    with tab_internal:
+        if result.get("internal_mission_command"):
+            st.code(pretty_json(result["internal_mission_command"]), language="json")
+        if execution:
+            st.dataframe(execution["timeline"], width="stretch", hide_index=True)
     with tab_prompt:
-        if show_prompt and result.get("prompt_messages"):
-            st.json(result["prompt_messages"], expanded=False)
+        if show_prompt:
+            st.json(result.get("prompt_messages", []), expanded=False)
         else:
-            st.write("Enable '显示 Prompt' in the sidebar to inspect the prompt.")
+            st.write("在侧边栏启用“显示 Prompt”以查看。")
     with tab_log:
         st.json(result, expanded=False)
 
 
 def render_runtime(frames: list[dict[str, Any]], *, autoplay: bool) -> None:
-    st.subheader("动态地图执行")
+    st.subheader("数据库地图上的单车取送轨迹")
     if not frames:
-        st.info("Run a command to see the unmanned car move on the map.")
+        st.info("订单解析成功且无需人工确认后，将在此显示轨迹。")
         return
-
-    frame_slot = st.empty()
-    status_slot = st.empty()
-    progress_slot = st.empty()
-
+    frame_slot, status_slot, progress_slot = st.empty(), st.empty(), st.empty()
     if autoplay:
         for index, frame in enumerate(frames):
             show_runtime_frame(frame_slot, status_slot, progress_slot, frame, index, len(frames))
             time.sleep(FRAME_DELAY_SECONDS)
         st.session_state.last_frame_index = len(frames) - 1
         return
-
     max_index = len(frames) - 1
     selected_index = st.slider(
         "运行进度",
@@ -208,37 +287,10 @@ def show_runtime_frame(
     frame_slot.image(frame["svg"], use_container_width=True)
     status_slot.caption(
         f"Frame {index + 1}/{total} | Step {frame.get('step')} | {frame.get('action')} | "
-        f"{frame.get('detail')} | Pose ({pose.get('x')}, {pose.get('y')}), heading {pose.get('heading')} deg"
+        f"{frame.get('detail')} | Pose ({pose.get('x')}, {pose.get('y')}), "
+        f"heading {pose.get('heading')}°"
     )
     progress_slot.progress((index + 1) / total)
-
-
-def render_steps(result: dict[str, Any]) -> None:
-    st.write("Pipeline")
-    rows = [
-        {"stage": "1. Natural language input", "status": "done", "detail": result.get("natural_language", "")},
-        {
-            "stage": "2. LLM translation",
-            "status": "done" if result.get("translation") else "failed",
-            "detail": (result.get("translation") or {}).get("source", ""),
-        },
-        {
-            "stage": "3. JSON validation",
-            "status": "passed" if result.get("validation", {}).get("ok") else "failed",
-            "detail": result.get("validation", {}).get("message", ""),
-        },
-        {
-            "stage": "4. Command execution",
-            "status": "done" if result.get("execution") else "not run",
-            "detail": f"{len((result.get('execution') or {}).get('timeline', []))} step(s)",
-        },
-    ]
-    st.dataframe(rows, width="stretch", hide_index=True)
-
-    execution = result.get("execution")
-    if execution:
-        st.write("Execution timeline")
-        st.dataframe(execution["timeline"], width="stretch", hide_index=True)
 
 
 if __name__ == "__main__":

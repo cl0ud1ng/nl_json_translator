@@ -7,11 +7,14 @@ from .location_resolver import (
     LocationResolver,
     UnknownLocationError,
 )
+from .order_service import OrderCreationResult, OrderService
 
 __all__ = [
     "AmbiguousLocationError",
     "LocationResolution",
     "LocationResolutionStatus",
     "LocationResolver",
+    "OrderCreationResult",
+    "OrderService",
     "UnknownLocationError",
 ]
