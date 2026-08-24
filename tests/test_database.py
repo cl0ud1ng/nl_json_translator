@@ -24,11 +24,11 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(session.execute(text("PRAGMA foreign_keys")).scalar_one(), 1)
             database.dispose()
 
-    def test_empty_seed_is_idempotent(self):
+    def test_demo_seed_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             url = f"sqlite:///{Path(temp_dir) / 'demo.db'}"
 
-            self.assertEqual(seed_demo_data(url), 0)
+            self.assertGreater(seed_demo_data(url), 0)
             self.assertEqual(seed_demo_data(url), 0)
 
 

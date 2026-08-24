@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -84,7 +84,7 @@ class LocationRecord(Base):
 class LocationAliasRecord(Base):
     __tablename__ = "location_aliases"
 
-    id: Mapped[Optional[int]] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     location_id: Mapped[str] = mapped_column(
         ForeignKey("locations.id", ondelete="CASCADE"), nullable=False, index=True
     )
