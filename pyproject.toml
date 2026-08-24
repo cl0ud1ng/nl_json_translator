@@ -1,0 +1,10 @@
+[project]
+name = "nl-json-translator"
+version = "0.1.0"
+description = "Standalone NL-to-JSON command translator demo inspired by ROSGPT."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+nl-json-translator = "nl_json_translator.cli:main"
+
