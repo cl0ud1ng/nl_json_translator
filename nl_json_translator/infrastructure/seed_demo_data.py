@@ -17,15 +17,41 @@ from .demo_map import (
     node_id,
 )
 from .init_db import init_database
-from .orm_models import LocationAliasRecord, LocationRecord, MapEdgeRecord, MapNodeRecord
+from .orm_models import (
+    LocationAliasRecord,
+    LocationRecord,
+    MapEdgeRecord,
+    MapNodeRecord,
+    VehicleRecord,
+)
 
 
 def seed_demo_data(database_url: Optional[str] = None) -> int:
     database = init_database(database_url)
     with database.session() as session:
         inserted = seed_map_data(session)
+        inserted += seed_vehicle_data(session)
     database.dispose()
     return inserted
+
+
+def seed_vehicle_data(session: Session) -> int:
+    if session.get(VehicleRecord, "vehicle_demo_01"):
+        return 0
+    session.add(
+        VehicleRecord(
+            id="vehicle_demo_01",
+            name="Demo Vehicle 01",
+            current_node_id=node_id(2, 2),
+            heading=0.0,
+            status="IDLE",
+            capacity_weight=500.0,
+            capacity_volume=3.0,
+            battery_level=100.0,
+            capabilities=["standard"],
+        )
+    )
+    return 1
 
 
 def seed_map_data(session: Session) -> int:
