@@ -4,6 +4,7 @@ import argparse
 from typing import Optional
 
 from .database import Database
+from . import orm_models  # noqa: F401  # Register all mapped tables before create_all.
 
 
 def init_database(database_url: Optional[str] = None) -> Database:

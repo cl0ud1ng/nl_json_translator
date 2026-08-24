@@ -16,7 +16,10 @@ class DatabaseTests(unittest.TestCase):
             database.create_schema()
 
             self.assertTrue(path.exists())
-            self.assertEqual(inspect(database.engine).get_table_names(), [])
+            self.assertEqual(
+                inspect(database.engine).get_table_names(),
+                ["location_aliases", "locations", "map_edges", "map_nodes"],
+            )
             with database.session() as session:
                 self.assertEqual(session.execute(text("PRAGMA foreign_keys")).scalar_one(), 1)
             database.dispose()
