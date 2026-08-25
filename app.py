@@ -8,6 +8,7 @@ from typing import Any, Optional
 import streamlit as st
 from sqlalchemy import update
 
+from nl_json_translator.agent_flow_renderer import render_agent_flow_svg
 from nl_json_translator.agents import AgentRuntime, DispatcherAgent
 from nl_json_translator.config import config_from_env, load_env_file
 from nl_json_translator.deepseek_client import DeepSeekClient
@@ -680,6 +681,13 @@ def render_fleet_runtime(
         format_func=lambda value: "全部执行车辆" if not value else labels[value],
         key="runtime_selected_vehicle",
     )
+    st.markdown("#### DispatcherAgent ↔ VehicleAgent 信息流")
+    st.caption(
+        "蓝色表示总控下发的 Mission、步骤和路由命令；"
+        "橙色表示车辆 Agent 回传的接收、位置、阻塞和完成事件。"
+    )
+    flow_slot = st.empty()
+    st.markdown("#### 多车路径与运行状态")
     map_slot, table_slot, caption_slot, progress_slot = (
         st.empty(),
         st.empty(),
@@ -690,6 +698,7 @@ def render_fleet_runtime(
     if autoplay:
         for index, frame in enumerate(frames):
             show_fleet_runtime_frame(
+                flow_slot,
                 map_slot,
                 table_slot,
                 caption_slot,
@@ -714,6 +723,7 @@ def render_fleet_runtime(
     )
     st.session_state.last_frame_index = selected_index
     show_fleet_runtime_frame(
+        flow_slot,
         map_slot,
         table_slot,
         caption_slot,
@@ -727,6 +737,7 @@ def render_fleet_runtime(
 
 
 def show_fleet_runtime_frame(
+    flow_slot: Any,
     map_slot: Any,
     table_slot: Any,
     caption_slot: Any,
@@ -740,6 +751,14 @@ def show_fleet_runtime_frame(
     vehicle_views = {
         vehicle.id: vehicle for vehicle in simulation.snapshot.vehicles
     }
+    flow_slot.image(
+        render_agent_flow_svg(
+            simulation,
+            frame,
+            selected_vehicle_id=selected_vehicle_id,
+        ),
+        width="stretch",
+    )
     map_slot.image(
         render_fleet_svg(
             map_data,

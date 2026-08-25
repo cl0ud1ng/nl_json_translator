@@ -48,6 +48,8 @@ streamlit run app.py
 
 UI 默认自然语言会产生 3 张订单、3 辆不同车、2 个取货点和 2 个目标点，
 但运行时和 Schema 没有三车数量限制。修改自然语言即可提交单订单或其他批量订单。
+多车回放同步展示 DispatcherAgent 与每个 VehicleAgent 的双向信息流：蓝色为 Mission、
+步骤和路由命令，橙色为命令接收、位置、阻塞、心跳和 Mission 完成事件。
 
 CLI 可只查看 Prompt 或调用 DeepSeek 输出批量意图：
 
