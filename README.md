@@ -1,120 +1,107 @@
-# 场内货物运输 NL-to-JSON Demo
+# 自然语言多车 Agent 调度系统
 
-本项目将自然语言货物取送请求转换为运输意图，使用数据库地点解析生成正式订单，由中央调度服务分配车辆和 Mission，并在 SQLite 地图上展示多车计划路线。
-
-当前链路：
+本项目将一段自然语言解析为 1 到 N 张场内运输订单，由唯一
+`DispatcherAgent` 完成整体任务分配和全局路径预约，再由每辆车对应的
+`VehicleAgent` 独立执行 Mission。
 
 ```text
 自然语言
-  -> DeepSeek 运输意图提取
-  -> Pydantic Schema 校验
-  -> LocationResolver 地点解析
-  -> TransportOrder 持久化
-  -> DispatchService 车辆筛选与 Mission 创建
-  -> 多车 SVG 调度总览与单车路径预览
+  -> DeepSeek 批量运输意图
+  -> Pydantic Schema
+  -> 地点解析与订单批次持久化
+  -> DispatcherAgent 批量车辆匹配与 Cooperative A*
+  -> 持久化 AgentCommand / RouteReservation
+  -> N 个 VehicleAgent 逐时间片执行
+  -> 订单、Mission、车辆和事件状态落库
+  -> Streamlit 动态回放
 ```
 
-LLM 只保留用户输入的地点文字、货物和约束，不生成数据库 ID，不分配车辆，也不规划路径。地点确认、订单状态和路径计算均由确定性代码执行。
+DeepSeek 只提取用户明确表达的订单、地点文字和调度约束；不生成数据库
+ID，不选择车辆，不规划路径。安全相关决策由确定性服务执行。
 
-## 当前项目进展
+## 双层 Agent 架构
 
-截至 2026-08-24，`plan.md` 中的“近期建议执行清单”已经完成：
+- `DispatcherAgent`：唯一总控，负责批量订单—车辆最小成本匹配、Mission 创建、
+  协同路径规划、时空预约和持久化命令下发。
+- `VehicleAgent`：每辆车一个实例，只消费本车命令，逐 tick 更新位置、载货、
+  订单与 Mission 状态。
+- `AgentRuntime`：使用确定性虚拟时钟协调 N 个 VehicleAgent，命令消费进度保存在
+  SQLite，Agent 重建后可从执行游标继续。
 
-- 运输意图和正式订单已成为唯一对外 Schema，旧动作协议仅保留为内部执行格式。
-- SQLite/SQLAlchemy 数据层已建立，支持幂等初始化 Demo 地图、地点、别名和车辆。
-- 地点解析支持标准名、别名、规范化、有限模糊匹配、歧义确认和未知地点错误。
-- 地图执行器已改为通过 Repository 读取节点、边和地点，并保留单车 A* 与 SVG 动画。
-- 车辆和运输订单已持久化，订单支持地点解析状态及幂等键。
-- Mission、MissionStep 和 AgentEvent 已持久化；活动订单和活动车辆具备唯一 Mission 约束。
-- DispatchService 支持优先级、指定车辆、遥测时效、容量、电量和能力硬约束，并使用数据库边权进行可解释的贪心分配。
-- Demo 包含三辆差异化车辆，Streamlit 可同时展示车辆状态、活动 Mission、计划路线和调度事件。
-- 多车运行时会同步播放车辆前往取货点、装货、载货运输、卸货和完成的全过程；已行驶路线、剩余路线与载货状态分别可见。
-- 默认演示一次创建 3 张订单并分配给 3 辆车，地点集合包含 2 个不同取货点和 2 个不同目标点；每辆车只绑定一张订单和一个取货—送货对。
-- Cooperative A* 使用离散时间片、节点容量和规范化双向边预约；后规划车辆会等待或绕行，避免普通节点冲突和迎面边冲突。取送服务点容量为 2，以支持三车共享两个目标点。
-- 动画完成后会持久化订单、Mission、MissionStep、车辆最终位置和完成事件。
-- 当前自动化测试共 51 项，覆盖 Schema、数据库、地点解析、订单、调度、加权路径、协同避碰、三车双取送场景、多车 SVG 和动态任务执行。
-
-项目目前处于单进程、多车动态仿真阶段。当前运行时会同步推进多个 Mission 并在动画结束后提交最终状态，路径层已具备进程内 Cooperative A*；尚未实现独立异步 VehicleAgent、预约表持久化和阻塞后的在线局部重规划。
+核心事实数据包括 `transport_batches`、`transport_orders`、`missions`、
+`mission_steps`、`agent_commands`、`vehicle_agent_states`、`route_reservations`
+和 `agent_events`。
 
 ## 快速开始
 
-项目要求 Python 3.9 或更高版本。
+需要 Python 3.9 或更高版本。
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install "pydantic>=2.7,<3" "SQLAlchemy>=2.0,<3"
+python -m pip install -r requirements-ui.txt
 cp .env.example .env
-# 编辑 .env，设置 DEEPSEEK_API_KEY
+# 在 .env 中设置 DEEPSEEK_API_KEY
 python -m nl_json_translator.infrastructure.seed_demo_data
-python -m nl_json_translator.cli "从 A 取 3 箱零件送到 B"
+streamlit run app.py
 ```
 
-CLI 输出的是唯一对外协议——运输意图草稿：
+UI 默认自然语言会产生 3 张订单、3 辆不同车、2 个取货点和 2 个目标点，
+但运行时和 Schema 没有三车数量限制。修改自然语言即可提交单订单或其他批量订单。
+
+CLI 可只查看 Prompt 或调用 DeepSeek 输出批量意图：
+
+```bash
+python -m nl_json_translator.cli --show-prompt "从 A 取一箱零件送到 B"
+python -m nl_json_translator.cli "从 A 取一箱零件送到 B"
+```
+
+唯一对外意图协议使用 `orders` 数组，即使只有一张订单：
 
 ```json
 {
-  "intent": "create_transport_order",
-  "cargo": {
-    "name": "零件箱",
-    "quantity": 3,
-    "weight_kg": null,
-    "volume_m3": null,
-    "category": null,
-    "required_capabilities": []
-  },
-  "pickup_location_text": "A",
-  "dropoff_location_text": "B",
-  "vehicle_text": null,
-  "priority": "normal"
+  "intent": "create_transport_orders",
+  "orders": [
+    {
+      "cargo": {"name": "零件箱", "quantity": 1},
+      "pickup_location_text": "A",
+      "dropoff_location_text": "B",
+      "priority": "normal"
+    }
+  ],
+  "dispatch_constraints": {
+    "distinct_vehicle_per_order": false
+  }
 }
 ```
 
-`go_to_goal` 等动作对象不再是外部协议，只在订单展开为内部执行步骤后使用。
-
 ## 数据库
 
-默认数据库为 `data/nl_json_translator.db`，数据库文件不会提交到 Git。可通过环境变量覆盖：
+默认使用 `data/nl_json_translator.db`：
 
 ```text
 NL_JSON_DATABASE_URL=sqlite:///data/nl_json_translator.db
 ```
 
-初始化空表结构：
-
-```bash
-python -m nl_json_translator.infrastructure.init_db
-```
-
-初始化并幂等填充 Demo 地图、地点、别名和车辆：
+Demo 数据库可重建，不维护迁移链。结构变更后可删除旧数据库，然后执行：
 
 ```bash
 python -m nl_json_translator.infrastructure.seed_demo_data
 ```
 
-当前 Demo 数据库属于可重建数据。表结构变化时删除旧数据库并重新运行种子命令，不维护迁移链。
-
-## CLI 与 Streamlit
-
-显示 Prompt 而不调用 API：
-
-```bash
-python -m nl_json_translator.cli --show-prompt "从实验室取药品送到充电站"
-```
-
-启动多车调度演示 UI：
-
-```bash
-python -m pip install -r requirements-ui.txt
-streamlit run app.py
-```
-
-UI 默认提供“三车双取送场景”，可配置两个取货点、两个目标点和三种货物；点击“创建订单并播放”后会完成三车分配、协同避碰规划和同步动画。自然语言单订单入口仍保留。歧义地点进入 `NEEDS_REVIEW`；未知地点明确报错，不会自动猜测。
-
 ## 测试
+
+离线测试不访问网络：
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖运输 Schema、数据库初始化和幂等种子、地点解析与歧义、订单幂等键、Mission/Event、车辆硬约束、加权调度、批量分配、多车 SVG，以及 Repository 驱动的 A* 回归。
+真实 DeepSeek 端到端测试会产生 API 调用费用，需要显式开启：
+
+```bash
+RUN_DEEPSEEK_E2E=1 python -m unittest tests.test_deepseek_e2e -v
+```
+
+在临时 SQLite 中验收：DeepSeek 响应元数据、3 张订单、3 辆不同车、2 个取货点、
+2 个目标点、3 个 Mission、全部 `DELIVERED` 和零运行时冲突。

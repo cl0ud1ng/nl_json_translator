@@ -1,5 +1,30 @@
 # 场内多车货物运输系统升级计划
 
+## 2026-08-25 双层 Agent 升级实施结果
+
+项目的运行时主线已从“三车双取送专用场景”升级为通用双层 Agent 架构：
+
+```text
+DeepSeek 批量意图
+  -> TransportBatch / TransportOrder
+  -> DispatcherAgent（唯一总控）
+  -> 持久化 AgentCommand / RouteReservation
+  -> VehicleAgent[vehicle_id] * N
+  -> 逐时间片执行与事件落库
+```
+
+已完成：
+
+- 唯一自然语言协议升级为 `create_transport_orders` + `orders[]`。
+- DeepSeek 响应 ID、实际模型、完成原因和 token 用量可审计。
+- DispatcherAgent 支持整批订单的全局最小成本车辆匹配，不再逐单贪心占用稀缺能力车辆。
+- 车辆 Agent 通过持久化命令、执行游标和状态版本独立执行本车 Mission。
+- 节点与边预约落库，消费后释放；Agent 重建后可从游标继续。
+- Streamlit 默认自然语言仍演示三车双取送，但业务链路不包含场景专用分支。
+- 真实 `deepseek-v4-pro` API 已在临时数据库中跑通 3 单、3 车、3 Mission、全部交付且无运行时冲突的完整链路。
+
+后续演进重点调整为：独立 Agent Worker 进程、滚动时域重规划、车辆取货后故障救援任务和多 Mission 队列优化。
+
 ## 1. 文档目的
 
 本文档用于指导 `nl_json_translator` 从当前的“单车自然语言指令翻译与地图演示”，逐步升级为“数据库驱动、支持多车协同的场内货物运输调度系统”。
