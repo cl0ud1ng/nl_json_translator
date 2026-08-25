@@ -19,10 +19,13 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(
                 inspect(database.engine).get_table_names(),
                 [
+                    "agent_events",
                     "location_aliases",
                     "locations",
                     "map_edges",
                     "map_nodes",
+                    "mission_steps",
+                    "missions",
                     "transport_orders",
                     "vehicles",
                 ],
