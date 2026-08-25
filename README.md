@@ -1,6 +1,6 @@
 # 场内货物运输 NL-to-JSON Demo
 
-本项目将自然语言货物取送请求转换为运输意图，使用数据库地点解析生成正式订单，并在 SQLite 地图上演示单车取送路径。
+本项目将自然语言货物取送请求转换为运输意图，使用数据库地点解析生成正式订单，由中央调度服务分配车辆和 Mission，并在 SQLite 地图上展示多车计划路线。
 
 当前链路：
 
@@ -10,7 +10,8 @@
   -> Pydantic Schema 校验
   -> LocationResolver 地点解析
   -> TransportOrder 持久化
-  -> Repository 地图读取与单车 A* 演示
+  -> DispatchService 车辆筛选与 Mission 创建
+  -> 多车 SVG 调度总览与单车路径预览
 ```
 
 LLM 只保留用户输入的地点文字、货物和约束，不生成数据库 ID，不分配车辆，也不规划路径。地点确认、订单状态和路径计算均由确定性代码执行。
@@ -24,10 +25,12 @@ LLM 只保留用户输入的地点文字、货物和约束，不生成数据库 
 - 地点解析支持标准名、别名、规范化、有限模糊匹配、歧义确认和未知地点错误。
 - 地图执行器已改为通过 Repository 读取节点、边和地点，并保留单车 A* 与 SVG 动画。
 - 车辆和运输订单已持久化，订单支持地点解析状态及幂等键。
-- CLI、DeepSeek 运输意图提取和 Streamlit 单车取送演示均可运行。
-- 当前自动化测试共 30 项，覆盖 Schema、数据库、地点解析、订单和地图执行。
+- Mission、MissionStep 和 AgentEvent 已持久化；活动订单和活动车辆具备唯一 Mission 约束。
+- DispatchService 支持优先级、指定车辆、遥测时效、容量、电量和能力硬约束，并使用数据库边权进行可解释的贪心分配。
+- Demo 包含三辆差异化车辆，Streamlit 可同时展示车辆状态、活动 Mission、计划路线和调度事件。
+- 当前自动化测试共 42 项，覆盖 Schema、数据库、地点解析、订单、调度、加权路径和多车 SVG。
 
-项目目前仍处于单进程、单车 Demo 阶段。完整订单状态机、中央调度器、多 VehicleAgent、时空预约避碰和 FastAPI 接口尚未实现；下一步将进入多车调度与冲突避免阶段。
+项目目前处于单进程、多车静态调度 Demo 阶段。VehicleAgent 尚未推进 MissionStep 和车辆位置，时空预约避碰与 FastAPI 接口也尚未实现；下一步是多车并发执行和冲突避免。
 
 ## 快速开始
 
@@ -95,14 +98,14 @@ python -m nl_json_translator.infrastructure.seed_demo_data
 python -m nl_json_translator.cli --show-prompt "从实验室取药品送到充电站"
 ```
 
-启动完整单车演示 UI：
+启动多车调度演示 UI：
 
 ```bash
 python -m pip install -r requirements-ui.txt
 streamlit run app.py
 ```
 
-UI 会展示运输意图、地点候选、订单状态、内部路径动作和数据库地图轨迹。歧义地点进入 `NEEDS_REVIEW`；未知地点明确报错，不会自动猜测。
+UI 会展示运输意图、地点候选、调度候选及拒绝原因、MissionStep、三辆车的计划路线和最近事件，并保留被分配车辆的单车路径预览。歧义地点进入 `NEEDS_REVIEW`；未知地点明确报错，不会自动猜测。
 
 ## 测试
 
@@ -110,4 +113,4 @@ UI 会展示运输意图、地点候选、订单状态、内部路径动作和�
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖运输 Schema、数据库初始化和幂等种子、地点解析与歧义、订单幂等键、车辆模型，以及 Repository 驱动的 A* 回归。
+测试覆盖运输 Schema、数据库初始化和幂等种子、地点解析与歧义、订单幂等键、Mission/Event、车辆硬约束、加权调度、批量分配、多车 SVG，以及 Repository 驱动的 A* 回归。

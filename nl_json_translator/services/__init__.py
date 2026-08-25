@@ -7,6 +7,7 @@ from .dispatch_service import (
     DispatchResult,
     DispatchService,
 )
+from .fleet_view_service import FleetSnapshot, FleetVehicleView, FleetViewService
 from .location_resolver import (
     AmbiguousLocationError,
     LocationResolution,
@@ -24,6 +25,9 @@ __all__ = [
     "DispatchPolicy",
     "DispatchResult",
     "DispatchService",
+    "FleetSnapshot",
+    "FleetVehicleView",
+    "FleetViewService",
     "LocationResolution",
     "LocationResolutionStatus",
     "LocationResolver",

@@ -62,6 +62,16 @@ class EventRepository:
         )
         return [_to_data(record) for record in self.session.scalars(statement)]
 
+    def list_recent(self, *, limit: int = 50) -> list[AgentEventData]:
+        if limit <= 0:
+            return []
+        statement = (
+            select(AgentEventRecord)
+            .order_by(AgentEventRecord.occurred_at.desc(), AgentEventRecord.id.desc())
+            .limit(limit)
+        )
+        return [_to_data(record) for record in self.session.scalars(statement)]
+
 
 def _to_data(record: AgentEventRecord) -> AgentEventData:
     return AgentEventData(

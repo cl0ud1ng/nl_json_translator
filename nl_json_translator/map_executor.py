@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from heapq import heappop, heappush
 from typing import Any
 
-from .repositories.maps import MapData, MapLocationData, MapRepository
+from .repositories.maps import MapData, MapLocationData, MapNodeData, MapRepository
 
 
 CELL_SIZE = 34
@@ -23,8 +23,7 @@ def execute_command(
     command: dict[str, Any], *, repository: MapRepository, start: str = "A"
 ) -> dict[str, Any]:
     map_data = repository.load()
-    start_location = require_location(map_data, start)
-    start_node = map_data.nodes[start_location.node_id]
+    start_node, _ = require_start_node(map_data, start)
     pose = Pose(x=start_node.x, y=start_node.y, heading=0.0)
     timeline: list[dict[str, Any]] = []
     executed_path = [{"x": pose.x, "y": pose.y}]
@@ -113,8 +112,7 @@ def build_runtime_frames(
     command: dict[str, Any], *, repository: MapRepository, start: str = "A"
 ) -> list[dict[str, Any]]:
     map_data = repository.load()
-    start_location = require_location(map_data, start)
-    start_node = map_data.nodes[start_location.node_id]
+    start_node, start_label = require_start_node(map_data, start)
     pose = Pose(x=start_node.x, y=start_node.y, heading=0.0)
     path_so_far = [{"x": pose.x, "y": pose.y}]
     frames = [
@@ -123,7 +121,7 @@ def build_runtime_frames(
             path=path_so_far,
             step=0,
             action="start",
-            detail=f"Start at {start_location.label}",
+            detail=f"Start at {start_label}",
             map_data=map_data,
         )
     ]
@@ -372,6 +370,13 @@ def require_location(map_data: MapData, value: Any) -> MapLocationData:
         return location
     known = ", ".join(sorted(item.name for item in map_data.locations.values()))
     raise ValueError(f'Unknown or ambiguous location "{value}". Known locations: {known}')
+
+
+def require_start_node(map_data: MapData, value: Any) -> tuple[MapNodeData, str]:
+    if isinstance(value, str) and value in map_data.nodes:
+        return map_data.nodes[value], value
+    location = require_location(map_data, value)
+    return map_data.nodes[location.node_id], location.label
 
 
 def reconstruct_path(

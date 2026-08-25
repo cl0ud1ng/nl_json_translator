@@ -89,6 +89,21 @@ class MapExecutorTests(unittest.TestCase):
         self.assertEqual(result["final_pose"]["y"], 2)
         self.assertIn("Stage", result["svg"])
 
+    def test_vehicle_node_id_can_be_used_as_execution_start(self):
+        command = {
+            "action": "go_to_goal",
+            "params": {"location": {"type": "str", "value": "loc_a"}},
+        }
+
+        result = execute_command(
+            command,
+            repository=self.repository,
+            start="node_3_2",
+        )
+
+        self.assertEqual(result["path"][0], {"x": 3, "y": 2})
+        self.assertEqual(result["final_pose"]["x"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

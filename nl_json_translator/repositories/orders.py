@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from nl_json_translator.domain.enums import OrderPriority, OrderStatus
@@ -77,6 +77,15 @@ class OrderRepository:
             .values(status=OrderStatus.ASSIGNED.value)
         )
         return result.rowcount == 1
+
+    def count_by_status(self) -> dict[OrderStatus, int]:
+        statement = select(TransportOrderRecord.status, func.count()).group_by(
+            TransportOrderRecord.status
+        )
+        return {
+            OrderStatus(status): count
+            for status, count in self.session.execute(statement)
+        }
 
 
 def _to_data(record: TransportOrderRecord) -> OrderData:

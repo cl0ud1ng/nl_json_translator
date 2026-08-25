@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
 import streamlit as st
+from sqlalchemy import update
 
 from nl_json_translator.config import config_from_env, load_env_file
 from nl_json_translator.deepseek_client import DeepSeekClient
+from nl_json_translator.domain.enums import OrderStatus
 from nl_json_translator.domain.schemas import TransportIntentDraft
+from nl_json_translator.fleet_renderer import render_fleet_svg
 from nl_json_translator.infrastructure.database import Database, default_database_url
+from nl_json_translator.infrastructure.demo_map import DEMO_VEHICLES
+from nl_json_translator.infrastructure.orm_models import VehicleRecord
 from nl_json_translator.infrastructure.seed_demo_data import seed_demo_data
 from nl_json_translator.map_executor import build_runtime_frames, execute_command, pretty_json
 from nl_json_translator.prompts import build_messages
 from nl_json_translator.repositories.maps import MapRepository
+from nl_json_translator.repositories.vehicles import VehicleRepository
+from nl_json_translator.services.dispatch_service import DispatchResult, DispatchService
+from nl_json_translator.services.fleet_view_service import FleetViewService
 from nl_json_translator.services.location_resolver import LocationResolution
 from nl_json_translator.services.order_service import OrderService
 from nl_json_translator.translator import Translator
@@ -26,20 +35,20 @@ FRAME_DELAY_SECONDS = 0.12
 
 
 def main() -> None:
-    st.set_page_config(page_title="场内货物运输 Demo", layout="wide")
+    st.set_page_config(page_title="场内多车调度 Demo", layout="wide")
     load_env_file(ROOT_DIR / ".env")
     _init_state()
     database_url = default_database_url()
     seed_demo_data(database_url)
     location_names = _location_names(database_url)
 
-    st.title("场内货物运输意图与单车执行 Demo")
+    st.title("场内多车货物运输调度 Demo")
     with st.sidebar:
         model = st.selectbox("模型", ["deepseek-v4-pro", "deepseek-v4-flash"], index=0)
-        start_point = st.selectbox("车辆演示起点", location_names, index=0)
+        start_point = st.selectbox("未分配时的路径预览起点", location_names, index=0)
         show_prompt = st.toggle("显示 Prompt", value=False)
         st.divider()
-        st.caption("自然语言 → 运输意图 → 地点解析 → 订单 → 单车取送路径")
+        st.caption("自然语言 → 订单 → 中央调度 → Mission → 多车计划路线")
         if st.button("清空结果", width="stretch"):
             st.session_state.last_result = None
             st.session_state.last_frame_index = 0
@@ -51,8 +60,9 @@ def main() -> None:
         height=90,
     )
     st.session_state.request_text = request_text
-    col_run, col_replay = st.columns(2)
+    col_run, col_dispatch, col_replay = st.columns(3)
     run_clicked = col_run.button("创建订单并播放", type="primary", width="stretch")
+    dispatch_clicked = col_dispatch.button("调度全部待处理订单", width="stretch")
     replay_clicked = col_replay.button(
         "重播轨迹",
         width="stretch",
@@ -69,9 +79,17 @@ def main() -> None:
             )
             st.session_state.last_frame_index = 0
             st.session_state.autoplay = True
+    if dispatch_clicked:
+        st.session_state.dispatch_notice = dispatch_ready_orders(database_url)
     if replay_clicked:
         st.session_state.last_frame_index = 0
         st.session_state.autoplay = True
+    notice = st.session_state.pop("dispatch_notice", None)
+    if notice:
+        st.success(notice)
+
+    render_fleet_dashboard(database_url)
+
     if st.session_state.last_result:
         render_result(
             st.session_state.last_result,
@@ -86,6 +104,7 @@ def _init_state() -> None:
     st.session_state.setdefault("last_frame_index", 0)
     st.session_state.setdefault("request_text", DEFAULT_REQUEST)
     st.session_state.setdefault("autoplay", False)
+    st.session_state.setdefault("dispatch_notice", None)
 
 
 def _location_names(database_url: str) -> list[str]:
@@ -108,6 +127,7 @@ def run_pipeline(
         "translation": None,
         "validation": {"ok": False},
         "order": None,
+        "dispatch": None,
         "internal_mission_command": None,
         "execution": None,
         "frames": [],
@@ -152,6 +172,19 @@ def run_pipeline(
                 return result
 
             formal_order = order_result.formal_order
+            _refresh_demo_telemetry(session)
+            dispatch_result = DispatchService(session).dispatch_order(order_result.order_id)
+            result["dispatch"] = _dispatch_dict(dispatch_result)
+            if not dispatch_result.assigned:
+                result["logs"].append(
+                    "No eligible idle vehicle is currently available; order remains RESOLVED."
+                )
+                return result
+            result["order"]["status"] = "ASSIGNED"
+            result["logs"].append(
+                f"Mission {dispatch_result.mission.id} assigned to "
+                f"{dispatch_result.selected_vehicle_id} at cost {dispatch_result.selected_cost}."
+            )
             internal_command = {
                 "action": "sequence",
                 "params": [
@@ -176,14 +209,22 @@ def run_pipeline(
                 ],
             }
             repository = MapRepository(session)
+            selected_vehicle = VehicleRepository(session).get(
+                dispatch_result.selected_vehicle_id
+            )
+            execution_start = (
+                selected_vehicle.current_node_id if selected_vehicle else start_point
+            )
             result["internal_mission_command"] = internal_command
             result["execution"] = execute_command(
-                internal_command, repository=repository, start=start_point
+                internal_command, repository=repository, start=execution_start
             )
             result["frames"] = build_runtime_frames(
-                internal_command, repository=repository, start=start_point
+                internal_command, repository=repository, start=execution_start
             )
-            result["logs"].append("Internal REPOSITION and TRANSPORT routes were simulated.")
+            result["logs"].append(
+                f"Assigned vehicle path preview started from {execution_start}."
+            )
     except Exception as exc:
         result["validation"] = {"ok": False, "message": str(exc)}
         result["logs"].append(f"Pipeline failed: {exc}")
@@ -204,10 +245,146 @@ def _resolution_dict(resolution: Optional[LocationResolution]) -> Optional[dict[
     }
 
 
+def _dispatch_dict(result: DispatchResult) -> dict[str, Any]:
+    return {
+        "assigned": result.assigned,
+        "order_id": result.order_id,
+        "mission_id": result.mission.id if result.mission else None,
+        "selected_vehicle_id": result.selected_vehicle_id,
+        "selected_cost": result.selected_cost,
+        "candidates": [
+            {
+                "vehicle_id": candidate.vehicle_id,
+                "vehicle_name": candidate.vehicle_name,
+                "eligible": candidate.eligible,
+                "cost": candidate.cost,
+                "reasons": list(candidate.reasons),
+            }
+            for candidate in result.candidates
+        ],
+        "steps": [
+            {
+                "sequence": step.sequence_no,
+                "type": step.step_type.value,
+                "status": step.status.value,
+                "start_node_id": step.start_node_id,
+                "end_node_id": step.end_node_id,
+            }
+            for step in (result.mission.steps if result.mission else ())
+        ],
+    }
+
+
+def dispatch_ready_orders(database_url: str) -> str:
+    database = Database(database_url)
+    try:
+        with database.session() as session:
+            _refresh_demo_telemetry(session)
+            results = DispatchService(session).dispatch_all_ready()
+        assigned = sum(result.assigned for result in results)
+        waiting = len(results) - assigned
+        return f"调度完成：新分配 {assigned} 个订单，仍待车辆 {waiting} 个订单。"
+    finally:
+        database.dispose()
+
+
+def _refresh_demo_telemetry(session: Any) -> None:
+    """The in-process demo treats every UI interaction as fresh simulated telemetry."""
+
+    vehicle_ids = [definition["id"] for definition in DEMO_VEHICLES]
+    session.execute(
+        update(VehicleRecord)
+        .where(VehicleRecord.id.in_(vehicle_ids))
+        .values(telemetry_updated_at=datetime.now(timezone.utc))
+    )
+
+
+def render_fleet_dashboard(database_url: str) -> None:
+    database = Database(database_url)
+    try:
+        with database.session() as session:
+            snapshot = FleetViewService(session).snapshot()
+            map_data = MapRepository(session).load()
+    finally:
+        database.dispose()
+
+    st.subheader("多车调度总览")
+    assigned_orders = snapshot.order_counts.get(OrderStatus.ASSIGNED, 0)
+    resolved_orders = snapshot.order_counts.get(OrderStatus.RESOLVED, 0)
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("车辆", len(snapshot.vehicles))
+    metric_cols[1].metric("空闲", snapshot.idle_vehicle_count)
+    metric_cols[2].metric("活动 Mission", len(snapshot.active_missions))
+    metric_cols[3].metric("待分配 / 已分配", f"{resolved_orders} / {assigned_orders}")
+
+    labels = {vehicle.id: f"{vehicle.name} · {vehicle.status.value}" for vehicle in snapshot.vehicles}
+    selected = st.selectbox(
+        "聚焦车辆",
+        [""] + list(labels),
+        format_func=lambda value: "全部车辆" if not value else labels[value],
+        key="fleet_selected_vehicle",
+    )
+    map_column, fleet_column = st.columns([2.15, 1])
+    with map_column:
+        st.image(
+            render_fleet_svg(map_data, snapshot, selected_vehicle_id=selected or None),
+            width="stretch",
+        )
+        st.caption("虚线表示已分配 Mission 的计划路线；聚焦车辆后会突出其路线。")
+    with fleet_column:
+        st.dataframe(
+            [
+                {
+                    "车辆": vehicle.name,
+                    "状态": vehicle.status.value,
+                    "电量": f"{vehicle.battery_level:.0f}%",
+                    "节点": vehicle.node_id,
+                    "订单": vehicle.order_id or "—",
+                }
+                for vehicle in snapshot.vehicles
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+    mission_tab, event_tab = st.tabs(["Mission 与步骤", "最近调度事件"])
+    with mission_tab:
+        mission_rows = [
+            {
+                "Mission": mission.id,
+                "订单": mission.order_id,
+                "车辆": mission.vehicle_id,
+                "状态": mission.status.value,
+                "步骤": " → ".join(step.step_type.value for step in mission.steps),
+            }
+            for mission in snapshot.active_missions
+        ]
+        if mission_rows:
+            st.dataframe(mission_rows, width="stretch", hide_index=True)
+        else:
+            st.info("当前没有活动 Mission。")
+    with event_tab:
+        event_rows = [
+            {
+                "时间": event.occurred_at.isoformat(timespec="seconds"),
+                "事件": event.event_type,
+                "车辆": event.vehicle_id or "—",
+                "订单": event.order_id or "—",
+                "Mission": event.mission_id or "—",
+            }
+            for event in snapshot.recent_events
+        ]
+        if event_rows:
+            st.dataframe(event_rows, width="stretch", hide_index=True)
+        else:
+            st.info("尚无调度事件。")
+
+
 def render_result(result: dict[str, Any], show_prompt: bool, *, autoplay: bool) -> None:
     translation = result.get("translation") or {}
     validation = result.get("validation") or {}
     order = result.get("order") or {}
+    dispatch = result.get("dispatch") or {}
     execution = result.get("execution") or {}
     frames = result.get("frames") or []
     st.subheader("运行结果")
@@ -215,21 +392,27 @@ def render_result(result: dict[str, Any], show_prompt: bool, *, autoplay: bool) 
     metric_cols[0].metric("意图来源", translation.get("source", "none"))
     metric_cols[1].metric("意图校验", "通过" if validation.get("ok") else "失败")
     metric_cols[2].metric("订单状态", order.get("status", "未创建"))
-    final_pose = execution.get("final_pose") or {}
-    metric_cols[3].metric("最终位置", f"({final_pose.get('x', '-')}, {final_pose.get('y', '-')})")
+    metric_cols[3].metric("调度车辆", dispatch.get("selected_vehicle_id") or "未分配")
     if validation.get("ok"):
         st.success(validation.get("message"))
     else:
         st.error(validation.get("message"))
     if order.get("status") == "NEEDS_REVIEW":
         st.warning("地点存在歧义，订单已进入 NEEDS_REVIEW，未执行路径。")
+    if dispatch and not dispatch.get("assigned"):
+        st.warning("当前没有满足硬约束的空闲车辆，订单保持 RESOLVED。")
     render_runtime(frames, autoplay=autoplay)
 
-    tab_order, tab_intent, tab_internal, tab_prompt, tab_log = st.tabs(
-        ["订单", "运输意图", "内部执行", "Prompt", "日志"]
+    tab_order, tab_dispatch, tab_intent, tab_internal, tab_prompt, tab_log = st.tabs(
+        ["订单", "调度决策", "运输意图", "内部执行", "Prompt", "日志"]
     )
     with tab_order:
         st.json(order, expanded=True)
+    with tab_dispatch:
+        if dispatch:
+            st.json(dispatch, expanded=True)
+        else:
+            st.write("该订单尚未进入调度。")
     with tab_intent:
         intent = translation.get("intent")
         if intent:
@@ -284,7 +467,7 @@ def show_runtime_frame(
     total: int,
 ) -> None:
     pose = frame.get("pose") or {}
-    frame_slot.image(frame["svg"], use_container_width=True)
+    frame_slot.image(frame["svg"], width="stretch")
     status_slot.caption(
         f"Frame {index + 1}/{total} | Step {frame.get('step')} | {frame.get('action')} | "
         f"{frame.get('detail')} | Pose ({pose.get('x')}, {pose.get('y')}), "

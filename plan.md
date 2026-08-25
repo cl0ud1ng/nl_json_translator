@@ -580,6 +580,15 @@ POST   /missions/{id}/replan
 
 ## 13. 实施阶段
 
+### 当前实施状态（2026-08-25）
+
+- 阶段 0 和阶段 1 的核心数据链路已经完成；地点管理页面或基础 API 仍未实现。
+- 阶段 2 已完成订单创建、Mission、MissionStep 和 AgentEvent 持久化，订单可展开为标准任务步骤。
+- 阶段 3 已进入开发：当前已有三辆差异化 Demo 车辆、确定性 DispatchService、活动 Mission 唯一约束、批量分配和多车 SVG 调度总览。
+- 阶段 3 尚未完成多个 VehicleAgent 对 MissionStep 的并发推进，车辆位置和执行状态目前不会随多车总览自动变化。
+- 阶段 4 的离散时间片、RouteReservation、Cooperative A*、WAIT 和冲突重规划尚未实现。
+- 阶段 5 尚未开始。
+
 ### 阶段 0：领域协议与工程准备
 
 工作内容：
