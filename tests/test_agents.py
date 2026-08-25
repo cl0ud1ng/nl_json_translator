@@ -13,6 +13,10 @@ from nl_json_translator.domain.enums import (
     OrderStatus,
 )
 from nl_json_translator.domain.schemas import TransportRequestDraft
+from nl_json_translator.fleet_renderer import (
+    render_fleet_svg,
+    retain_completed_route_states,
+)
 from nl_json_translator.infrastructure.database import Database
 from nl_json_translator.infrastructure.orm_models import (
     AgentCommandRecord,
@@ -83,8 +87,22 @@ class TwoLevelAgentTests(unittest.TestCase):
                 3,
             )
             simulation = AgentRuntime(session).run_until_idle()
-            conflicts = find_runtime_conflicts(MapRepository(session).load(), simulation)
+            map_data = MapRepository(session).load()
+            conflicts = find_runtime_conflicts(map_data, simulation)
             self.assertEqual(conflicts, [])
+            final_route_frame = retain_completed_route_states(
+                simulation, simulation.frames[-1]
+            )
+            self.assertEqual(
+                sum(state.mission_id is not None for state in final_route_frame.vehicles),
+                3,
+            )
+            final_svg = render_fleet_svg(
+                map_data,
+                simulation.snapshot,
+                runtime_frame=final_route_frame,
+            )
+            self.assertEqual(final_svg.count('data-route-kind="executed"'), 3)
 
         with self.database.session() as session:
             self.assertTrue(

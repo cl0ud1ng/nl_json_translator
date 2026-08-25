@@ -8,6 +8,7 @@ from nl_json_translator.infrastructure.seed_demo_data import seed_demo_data
 from nl_json_translator.fleet_renderer import render_fleet_svg
 from nl_json_translator.repositories.maps import MapRepository
 from nl_json_translator.services.dispatch_service import DispatchService
+from nl_json_translator.services.fleet_simulation_service import FleetSimulationService
 from nl_json_translator.services.fleet_view_service import FleetViewService
 
 
@@ -48,7 +49,10 @@ class FleetRendererTests(unittest.TestCase):
             snapshot = FleetViewService(session).snapshot()
             map_data = MapRepository(session).load()
             svg = render_fleet_svg(
-                map_data, snapshot, selected_vehicle_id="vehicle_demo_02"
+                map_data,
+                snapshot,
+                selected_vehicle_id="vehicle_demo_02",
+                show_route_endpoints=True,
             )
 
         active = [vehicle for vehicle in snapshot.vehicles if vehicle.mission_id]
@@ -56,6 +60,10 @@ class FleetRendererTests(unittest.TestCase):
         self.assertTrue(all(vehicle.planned_node_ids for vehicle in active))
         self.assertIn('aria-label="Multi-vehicle dispatch map"', svg)
         self.assertGreaterEqual(svg.count("stroke-dasharray"), 2)
+        self.assertEqual(svg.count('data-route-endpoint="start"'), 2)
+        self.assertEqual(svg.count('data-route-endpoint="end"'), 2)
+        self.assertIn(">起</text>", svg)
+        self.assertIn(">终</text>", svg)
         self.assertIn("Demo Vehicle 01", svg)
         self.assertIn("Demo Vehicle 02", svg)
         self.assertIn("Demo Vehicle 03", svg)
@@ -71,6 +79,29 @@ class FleetRendererTests(unittest.TestCase):
 
         self.assertIn("&lt;Demo &amp; Three&gt;", svg)
         self.assertNotIn("<Demo & Three>", svg)
+
+    def test_completed_fleet_keeps_last_planned_routes_and_endpoints(self):
+        with self.database.session() as session:
+            planned_snapshot = FleetViewService(session).snapshot()
+            map_data = MapRepository(session).load()
+            simulation = FleetSimulationService(session).build(
+                map_data, planned_snapshot
+            )
+            FleetSimulationService(session).complete(simulation)
+
+        with self.database.session() as session:
+            current_snapshot = FleetViewService(session).snapshot()
+            svg = render_fleet_svg(
+                MapRepository(session).load(),
+                current_snapshot,
+                route_snapshot=planned_snapshot,
+                show_route_endpoints=True,
+            )
+
+        self.assertFalse(any(vehicle.planned_node_ids for vehicle in current_snapshot.vehicles))
+        self.assertEqual(svg.count('data-route-kind="planned"'), 2)
+        self.assertEqual(svg.count('data-route-endpoint="start"'), 2)
+        self.assertEqual(svg.count('data-route-endpoint="end"'), 2)
 
 
 if __name__ == "__main__":

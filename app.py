@@ -14,7 +14,10 @@ from nl_json_translator.config import config_from_env, load_env_file
 from nl_json_translator.deepseek_client import DeepSeekClient
 from nl_json_translator.domain.enums import OrderStatus
 from nl_json_translator.domain.schemas import TransportRequestDraft
-from nl_json_translator.fleet_renderer import render_fleet_svg
+from nl_json_translator.fleet_renderer import (
+    render_fleet_svg,
+    retain_completed_route_states,
+)
 from nl_json_translator.infrastructure.database import Database, default_database_url
 from nl_json_translator.infrastructure.demo_map import DEMO_VEHICLES
 from nl_json_translator.infrastructure.orm_models import TransportOrderRecord, VehicleRecord
@@ -29,7 +32,7 @@ from nl_json_translator.services.fleet_simulation_service import (
     FleetSimulation,
     FleetSimulationService,
 )
-from nl_json_translator.services.fleet_view_service import FleetViewService
+from nl_json_translator.services.fleet_view_service import FleetSnapshot, FleetViewService
 from nl_json_translator.services.location_resolver import LocationResolution
 from nl_json_translator.translator import Translator
 
@@ -94,7 +97,12 @@ def main() -> None:
     if notice:
         st.success(notice)
 
-    render_fleet_dashboard(database_url)
+    last_result = st.session_state.last_result or {}
+    last_simulation = last_result.get("fleet_simulation")
+    render_fleet_dashboard(
+        database_url,
+        route_snapshot=(last_simulation.snapshot if last_simulation else None),
+    )
 
     if st.session_state.last_result:
         render_result(
@@ -462,7 +470,11 @@ def _refresh_demo_telemetry(session: Any) -> None:
     )
 
 
-def render_fleet_dashboard(database_url: str) -> None:
+def render_fleet_dashboard(
+    database_url: str,
+    *,
+    route_snapshot: Optional[FleetSnapshot] = None,
+) -> None:
     database = Database(database_url)
     try:
         with database.session() as session:
@@ -481,6 +493,9 @@ def render_fleet_dashboard(database_url: str) -> None:
     metric_cols[3].metric("待分配 / 已分配", f"{resolved_orders} / {assigned_orders}")
 
     labels = {vehicle.id: f"{vehicle.name} · {vehicle.status.value}" for vehicle in snapshot.vehicles}
+    route_by_vehicle = {
+        vehicle.id: vehicle for vehicle in (route_snapshot.vehicles if route_snapshot else ())
+    }
     selected = st.selectbox(
         "聚焦车辆",
         [""] + list(labels),
@@ -490,10 +505,19 @@ def render_fleet_dashboard(database_url: str) -> None:
     map_column, fleet_column = st.columns([2.15, 1])
     with map_column:
         st.image(
-            render_fleet_svg(map_data, snapshot, selected_vehicle_id=selected or None),
+            render_fleet_svg(
+                map_data,
+                snapshot,
+                selected_vehicle_id=selected or None,
+                route_snapshot=route_snapshot,
+                show_route_endpoints=True,
+            ),
             width="stretch",
         )
-        st.caption("虚线表示已分配 Mission 的计划路线；聚焦车辆后会突出其路线。")
+        st.caption(
+            "虚线表示最近一次调度的规划路线；“起/终”标记和 V 编号表示"
+            "每辆车的规划起点与终点。聚焦车辆后会突出对应路线。"
+        )
     with fleet_column:
         st.dataframe(
             [
@@ -502,10 +526,38 @@ def render_fleet_dashboard(database_url: str) -> None:
                     "状态": vehicle.status.value,
                     "电量": f"{vehicle.battery_level:.0f}%",
                     "节点": vehicle.node_id,
-                    "货物": vehicle.cargo_name or "—",
-                    "取货": vehicle.pickup_location_id or "—",
-                    "目标": vehicle.dropoff_location_id or "—",
-                    "订单": vehicle.order_id or "—",
+                    "规划起点": (
+                        route_by_vehicle[vehicle.id].planned_node_ids[0]
+                        if vehicle.id in route_by_vehicle
+                        and route_by_vehicle[vehicle.id].planned_node_ids
+                        else "—"
+                    ),
+                    "规划终点": (
+                        route_by_vehicle[vehicle.id].planned_node_ids[-1]
+                        if vehicle.id in route_by_vehicle
+                        and route_by_vehicle[vehicle.id].planned_node_ids
+                        else "—"
+                    ),
+                    "货物": (
+                        route_by_vehicle.get(vehicle.id).cargo_name
+                        if route_by_vehicle.get(vehicle.id)
+                        else vehicle.cargo_name
+                    ) or "—",
+                    "取货": (
+                        route_by_vehicle.get(vehicle.id).pickup_location_id
+                        if route_by_vehicle.get(vehicle.id)
+                        else vehicle.pickup_location_id
+                    ) or "—",
+                    "目标": (
+                        route_by_vehicle.get(vehicle.id).dropoff_location_id
+                        if route_by_vehicle.get(vehicle.id)
+                        else vehicle.dropoff_location_id
+                    ) or "—",
+                    "订单": (
+                        route_by_vehicle.get(vehicle.id).order_id
+                        if route_by_vehicle.get(vehicle.id)
+                        else vehicle.order_id
+                    ) or "—",
                 }
                 for vehicle in snapshot.vehicles
             ],
@@ -751,6 +803,7 @@ def show_fleet_runtime_frame(
     vehicle_views = {
         vehicle.id: vehicle for vehicle in simulation.snapshot.vehicles
     }
+    route_frame = retain_completed_route_states(simulation, frame)
     flow_slot.image(
         render_agent_flow_svg(
             simulation,
@@ -764,11 +817,11 @@ def show_fleet_runtime_frame(
             map_data,
             simulation.snapshot,
             selected_vehicle_id=selected_vehicle_id,
-            runtime_frame=frame,
+            runtime_frame=route_frame,
         ),
         width="stretch",
     )
-    active_states = [state for state in frame.vehicles if state.mission_id]
+    active_states = [state for state in route_frame.vehicles if state.mission_id]
     table_slot.dataframe(
         [
             {
@@ -788,7 +841,8 @@ def show_fleet_runtime_frame(
     )
     caption_slot.caption(
         f"时间片 {frame.index + 1}/{len(simulation.frames)} ｜ "
-        "实线为已行驶路线，虚线为剩余路线，黄色“货”标记表示车辆已装货。"
+        "实线为已行驶路线，虚线为剩余路线，黄色“货”标记表示车辆已装货；"
+        "到达目标后保留完整已行驶路线。"
     )
     progress_slot.progress((frame.index + 1) / len(simulation.frames))
 

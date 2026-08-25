@@ -4,7 +4,10 @@ import html
 from typing import Optional
 
 from nl_json_translator.repositories.maps import MapData
-from nl_json_translator.services.fleet_simulation_service import FleetRuntimeFrame
+from nl_json_translator.services.fleet_simulation_service import (
+    FleetRuntimeFrame,
+    FleetSimulation,
+)
 from nl_json_translator.services.fleet_view_service import FleetSnapshot, FleetVehicleView
 
 
@@ -29,6 +32,8 @@ def render_fleet_svg(
     *,
     selected_vehicle_id: Optional[str] = None,
     runtime_frame: Optional[FleetRuntimeFrame] = None,
+    route_snapshot: Optional[FleetSnapshot] = None,
+    show_route_endpoints: bool = False,
 ) -> str:
     width = map_data.width * CELL_SIZE
     height = map_data.height * CELL_SIZE
@@ -39,9 +44,12 @@ def render_fleet_svg(
     ]
     _draw_grid(parts, map_data, width, height)
     _draw_obstacles(parts, map_data)
-    _draw_routes(parts, map_data, snapshot, selected_vehicle_id, runtime_frame)
+    route_source = route_snapshot or snapshot
+    _draw_routes(parts, map_data, route_source, selected_vehicle_id, runtime_frame)
     _draw_locations(parts, map_data)
     _draw_vehicles(parts, map_data, snapshot, selected_vehicle_id, runtime_frame)
+    if show_route_endpoints:
+        _draw_route_endpoints(parts, map_data, route_source, selected_vehicle_id)
     parts.append("</svg>")
     return "".join(parts)
 
@@ -166,6 +174,62 @@ def _draw_locations(parts: list[str], map_data: MapData) -> None:
         )
 
 
+def _draw_route_endpoints(
+    parts: list[str],
+    map_data: MapData,
+    snapshot: FleetSnapshot,
+    selected_vehicle_id: Optional[str],
+) -> None:
+    occurrences: dict[tuple[str, str], int] = {}
+    route_vehicles = [vehicle for vehicle in snapshot.vehicles if vehicle.planned_node_ids]
+    endpoint_counts: dict[tuple[str, str], int] = {}
+    for vehicle in route_vehicles:
+        for kind, node_id in (
+            ("start", vehicle.planned_node_ids[0]),
+            ("end", vehicle.planned_node_ids[-1]),
+        ):
+            endpoint_counts[(kind, node_id)] = endpoint_counts.get((kind, node_id), 0) + 1
+    for route_index, vehicle in enumerate(route_vehicles, start=1):
+        selected = not selected_vehicle_id or vehicle.id == selected_vehicle_id
+        opacity = 1.0 if selected else 0.24
+        endpoints = (
+            ("start", vehicle.planned_node_ids[0], "起", -1),
+            ("end", vehicle.planned_node_ids[-1], "终", 1),
+        )
+        for kind, node_id, label, vertical_direction in endpoints:
+            node = map_data.nodes.get(node_id)
+            if not node:
+                continue
+            occurrence_key = (kind, node_id)
+            occurrence = occurrences.get(occurrence_key, 0)
+            occurrences[occurrence_key] = occurrence + 1
+            center_x, center_y = _node_center(node.x, node.y)
+            endpoint_count = endpoint_counts[occurrence_key]
+            offset_x = (occurrence - (endpoint_count - 1) / 2) * 30
+            offset_y = -50 if vertical_direction < 0 else 28
+            marker_x = min(max(15, center_x + offset_x), map_data.width * CELL_SIZE - 15)
+            marker_y = min(max(15, center_y + offset_y), map_data.height * CELL_SIZE - 15)
+            parts.extend(
+                [
+                    f'<g data-route-endpoint="{kind}" '
+                    f'data-vehicle-id="{html.escape(vehicle.id)}" opacity="{opacity}">',
+                    f'<line x1="{center_x}" y1="{center_y}" x2="{marker_x}" '
+                    f'y2="{marker_y}" stroke="{html.escape(vehicle.color)}" '
+                    'stroke-width="2" stroke-dasharray="3 3"/>',
+                    f'<circle cx="{marker_x}" cy="{marker_y}" r="13" fill="#ffffff" '
+                    f'stroke="{html.escape(vehicle.color)}" stroke-width="3"/>',
+                    f'<text x="{marker_x}" y="{marker_y - 1}" '
+                    f'fill="{html.escape(vehicle.color)}" font-size="7" font-weight="800" '
+                    f'text-anchor="middle">V{route_index}</text>',
+                    f'<text x="{marker_x}" y="{marker_y + 8}" '
+                    f'fill="{html.escape(vehicle.color)}" font-size="9" font-weight="800" '
+                    f'text-anchor="middle">{label}</text>',
+                    f'<title>{html.escape(vehicle.name)} {label}点 · {html.escape(node_id)}</title>',
+                    "</g>",
+                ]
+            )
+
+
 def _draw_vehicles(
     parts: list[str],
     map_data: MapData,
@@ -244,3 +308,28 @@ def _route_points(map_data: MapData, node_ids: tuple[str, ...]) -> list[tuple[fl
 
 def _node_center(x: int, y: int) -> tuple[float, float]:
     return x * CELL_SIZE + CELL_SIZE / 2, y * CELL_SIZE + CELL_SIZE / 2
+
+
+def retain_completed_route_states(
+    simulation: FleetSimulation,
+    frame: FleetRuntimeFrame,
+) -> FleetRuntimeFrame:
+    """Keep a completed vehicle's final executed route visible in later frames."""
+
+    states = []
+    for current in frame.vehicles:
+        if current.mission_id:
+            states.append(current)
+            continue
+        completed = None
+        for previous in reversed(simulation.frames[: frame.index + 1]):
+            candidate = next(
+                state
+                for state in previous.vehicles
+                if state.vehicle_id == current.vehicle_id
+            )
+            if candidate.mission_id and candidate.phase == "任务完成":
+                completed = candidate
+                break
+        states.append(completed or current)
+    return FleetRuntimeFrame(index=frame.index, vehicles=tuple(states))
