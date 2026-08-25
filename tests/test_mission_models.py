@@ -21,8 +21,8 @@ class MissionModelTests(unittest.TestCase):
         with self.database.session() as session:
             session.add(
                 VehicleRecord(
-                    id="vehicle_demo_02",
-                    name="Demo Vehicle 02",
+                    id="vehicle_test_extra",
+                    name="Test Extra Vehicle",
                     current_node_id="node_16_3",
                     capacity_weight=300,
                     capacity_volume=2,
@@ -112,7 +112,7 @@ class MissionModelTests(unittest.TestCase):
             with self.database.session() as session:
                 MissionRepository(session).create(
                     order_id="order_01",
-                    vehicle_id="vehicle_demo_02",
+                    vehicle_id="vehicle_test_extra",
                     steps=[step],
                 )
 

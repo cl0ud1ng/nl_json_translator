@@ -63,6 +63,39 @@ DEMO_LOCATIONS: tuple[dict[str, Any], ...] = (
     },
 )
 
+DEMO_VEHICLES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "vehicle_demo_01",
+        "name": "Demo Vehicle 01",
+        "coordinate": (2, 2),
+        "heading": 0.0,
+        "capacity_weight": 500.0,
+        "capacity_volume": 3.0,
+        "battery_level": 100.0,
+        "capabilities": ("standard", "cold_chain"),
+    },
+    {
+        "id": "vehicle_demo_02",
+        "name": "Demo Vehicle 02",
+        "coordinate": (6, 11),
+        "heading": 270.0,
+        "capacity_weight": 250.0,
+        "capacity_volume": 1.5,
+        "battery_level": 78.0,
+        "capabilities": ("standard", "forklift"),
+    },
+    {
+        "id": "vehicle_demo_03",
+        "name": "Demo Vehicle 03",
+        "coordinate": (17, 11),
+        "heading": 180.0,
+        "capacity_weight": 1000.0,
+        "capacity_volume": 6.0,
+        "battery_level": 62.0,
+        "capabilities": ("standard", "heavy_lift", "explosion_proof"),
+    },
+)
+
 
 def node_id(x: int, y: int) -> str:
     return f"node_{x}_{y}"

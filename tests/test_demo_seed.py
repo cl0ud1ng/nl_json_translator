@@ -10,12 +10,14 @@ from nl_json_translator.infrastructure.demo_map import (
     DEMO_GRID_WIDTH,
     DEMO_LOCATIONS,
     DEMO_OBSTACLE_COORDINATES,
+    DEMO_VEHICLES,
     node_id,
 )
 from nl_json_translator.infrastructure.orm_models import (
     LocationRecord,
     MapEdgeRecord,
     MapNodeRecord,
+    VehicleRecord,
 )
 from nl_json_translator.infrastructure.seed_demo_data import seed_demo_data
 
@@ -32,6 +34,7 @@ class DemoSeedTests(unittest.TestCase):
                 node_count = session.scalar(select(func.count()).select_from(MapNodeRecord))
                 edge_count = session.scalar(select(func.count()).select_from(MapEdgeRecord))
                 locations = list(session.scalars(select(LocationRecord).order_by(LocationRecord.id)))
+                vehicles = list(session.scalars(select(VehicleRecord).order_by(VehicleRecord.id)))
 
                 self.assertEqual(
                     node_count,
@@ -42,6 +45,11 @@ class DemoSeedTests(unittest.TestCase):
                 self.assertEqual({location.name for location in locations}, {"A", "B", "C", "lab", "charging station"})
                 self.assertIsNone(session.get(MapNodeRecord, node_id(5, 2)))
                 self.assertIsNotNone(session.get(MapNodeRecord, node_id(2, 2)))
+                self.assertEqual(len(vehicles), len(DEMO_VEHICLES))
+                self.assertEqual(
+                    {vehicle.current_node_id for vehicle in vehicles},
+                    {"node_2_2", "node_6_11", "node_17_11"},
+                )
             database.dispose()
 
 

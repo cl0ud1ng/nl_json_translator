@@ -19,6 +19,17 @@ class MapNodeData:
 
 
 @dataclass(frozen=True)
+class MapEdgeData:
+    id: str
+    from_node_id: str
+    to_node_id: str
+    distance: float
+    travel_time: float
+    capacity: int
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class MapLocationData:
     id: str
     name: str
@@ -33,10 +44,20 @@ class MapData:
     nodes: dict[str, MapNodeData]
     adjacency: dict[str, tuple[str, ...]]
     locations: dict[str, MapLocationData]
+    edges: dict[str, MapEdgeData]
 
     def __post_init__(self) -> None:
         coordinate_index = {(node.x, node.y): node_id for node_id, node in self.nodes.items()}
+        outgoing_edges: dict[str, list[MapEdgeData]] = {node_id: [] for node_id in self.nodes}
+        for edge in self.edges.values():
+            if edge.from_node_id in outgoing_edges and edge.to_node_id in self.nodes:
+                outgoing_edges[edge.from_node_id].append(edge)
         object.__setattr__(self, "_coordinate_index", coordinate_index)
+        object.__setattr__(
+            self,
+            "_outgoing_edges",
+            {node_id: tuple(items) for node_id, items in outgoing_edges.items()},
+        )
 
     @property
     def width(self) -> int:
@@ -65,6 +86,9 @@ class MapData:
         end_node = self.node_at(end)
         return bool(start_node and end_node and end_node.id in self.adjacency.get(start_node.id, ()))
 
+    def outgoing_edges(self, node_id: str) -> tuple[MapEdgeData, ...]:
+        return self._outgoing_edges.get(node_id, ())  # type: ignore[attr-defined]
+
     def resolve_location(self, value: Any) -> Optional[MapLocationData]:
         if not isinstance(value, str):
             return None
@@ -91,8 +115,27 @@ class MapRepository:
             for record in node_records
         }
         adjacency_lists: dict[str, list[str]] = {node_id: [] for node_id in nodes}
-        edges = self.session.scalars(select(MapEdgeRecord).where(MapEdgeRecord.enabled.is_(True)).order_by(MapEdgeRecord.id))
-        for edge in edges:
+        edge_records = list(
+            self.session.scalars(
+                select(MapEdgeRecord)
+                .where(MapEdgeRecord.enabled.is_(True))
+                .order_by(MapEdgeRecord.id)
+            )
+        )
+        edges = {
+            edge.id: MapEdgeData(
+                id=edge.id,
+                from_node_id=edge.from_node_id,
+                to_node_id=edge.to_node_id,
+                distance=edge.distance,
+                travel_time=edge.travel_time,
+                capacity=edge.capacity,
+                metadata=dict(edge.metadata_json),
+            )
+            for edge in edge_records
+            if edge.from_node_id in nodes and edge.to_node_id in nodes
+        }
+        for edge in edges.values():
             if edge.from_node_id in nodes and edge.to_node_id in nodes:
                 adjacency_lists[edge.from_node_id].append(edge.to_node_id)
         adjacency = {node_id: tuple(neighbor_ids) for node_id, neighbor_ids in adjacency_lists.items()}
@@ -116,4 +159,4 @@ class MapRepository:
                 color=str(metadata.get("color", "#475569")),
                 aliases=tuple(alias.alias for alias in record.aliases),
             )
-        return MapData(nodes=nodes, adjacency=adjacency, locations=locations)
+        return MapData(nodes=nodes, adjacency=adjacency, locations=locations, edges=edges)

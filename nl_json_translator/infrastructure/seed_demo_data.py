@@ -13,6 +13,7 @@ from .demo_map import (
     DEMO_GRID_WIDTH,
     DEMO_LOCATIONS,
     DEMO_OBSTACLE_COORDINATES,
+    DEMO_VEHICLES,
     edge_id,
     node_id,
 )
@@ -36,22 +37,26 @@ def seed_demo_data(database_url: Optional[str] = None) -> int:
 
 
 def seed_vehicle_data(session: Session) -> int:
-    if session.get(VehicleRecord, "vehicle_demo_01"):
-        return 0
-    session.add(
-        VehicleRecord(
-            id="vehicle_demo_01",
-            name="Demo Vehicle 01",
-            current_node_id=node_id(2, 2),
-            heading=0.0,
-            status="IDLE",
-            capacity_weight=500.0,
-            capacity_volume=3.0,
-            battery_level=100.0,
-            capabilities=["standard"],
+    inserted = 0
+    for definition in DEMO_VEHICLES:
+        if session.get(VehicleRecord, definition["id"]):
+            continue
+        x, y = definition["coordinate"]
+        session.add(
+            VehicleRecord(
+                id=definition["id"],
+                name=definition["name"],
+                current_node_id=node_id(x, y),
+                heading=definition["heading"],
+                status="IDLE",
+                capacity_weight=definition["capacity_weight"],
+                capacity_volume=definition["capacity_volume"],
+                battery_level=definition["battery_level"],
+                capabilities=list(definition["capabilities"]),
+            )
         )
-    )
-    return 1
+        inserted += 1
+    return inserted
 
 
 def seed_map_data(session: Session) -> int:
