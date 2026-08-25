@@ -302,3 +302,104 @@ class AgentEventRecord(Base):
     order: Mapped[Optional[TransportOrderRecord]] = relationship(foreign_keys=[order_id])
     mission: Mapped[Optional[MissionRecord]] = relationship(foreign_keys=[mission_id])
     vehicle: Mapped[Optional[VehicleRecord]] = relationship(foreign_keys=[vehicle_id])
+
+
+class TransportBatchRecord(Base):
+    __tablename__ = "transport_batches"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    natural_language: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    constraints_json: Mapped[dict[str, Any]] = mapped_column(
+        "constraints", JSON, nullable=False, default=dict
+    )
+    provider_response_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    provider_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    provider_usage_json: Mapped[dict[str, Any]] = mapped_column(
+        "provider_usage", JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+class AgentCommandRecord(Base):
+    __tablename__ = "agent_commands"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    target_agent_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    command_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    vehicle_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    mission_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("missions.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    correlation_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(
+        "payload", JSON, nullable=False, default=dict
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VehicleAgentStateRecord(Base):
+    __tablename__ = "vehicle_agent_states"
+
+    vehicle_id: Mapped[str] = mapped_column(
+        ForeignKey("vehicles.id", ondelete="CASCADE"), primary_key=True
+    )
+    agent_id: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    active_command_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("agent_commands.id", ondelete="SET NULL"), nullable=True
+    )
+    active_mission_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("missions.id", ondelete="SET NULL"), nullable=True
+    )
+    execution_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    route_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    carrying_cargo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class RouteReservationRecord(Base):
+    __tablename__ = "route_reservations"
+    __table_args__ = (
+        UniqueConstraint(
+            "mission_id",
+            "resource_type",
+            "resource_id",
+            "time_slot",
+            "route_version",
+            name="uq_route_reservation_mission_resource_slot",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    mission_id: Mapped[str] = mapped_column(
+        ForeignKey("missions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    vehicle_id: Mapped[str] = mapped_column(
+        ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    resource_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(220), nullable=False, index=True)
+    time_slot: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    route_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )

@@ -13,8 +13,12 @@ from nl_json_translator.domain.location_text import normalize_location_text
 from nl_json_translator.infrastructure.demo_map import DEMO_VEHICLES, node_id
 from nl_json_translator.infrastructure.orm_models import (
     AgentEventRecord,
+    AgentCommandRecord,
     MissionRecord,
+    RouteReservationRecord,
+    TransportBatchRecord,
     TransportOrderRecord,
+    VehicleAgentStateRecord,
     VehicleRecord,
 )
 from nl_json_translator.repositories.maps import MapRepository
@@ -130,8 +134,12 @@ class DemoScenarioService:
 
     def reset_demo_runtime(self) -> dict[str, int]:
         deleted_events = self.session.execute(delete(AgentEventRecord)).rowcount
+        deleted_agent_states = self.session.execute(delete(VehicleAgentStateRecord)).rowcount
+        deleted_reservations = self.session.execute(delete(RouteReservationRecord)).rowcount
+        deleted_commands = self.session.execute(delete(AgentCommandRecord)).rowcount
         deleted_missions = self.session.execute(delete(MissionRecord)).rowcount
         deleted_orders = self.session.execute(delete(TransportOrderRecord)).rowcount
+        deleted_batches = self.session.execute(delete(TransportBatchRecord)).rowcount
         timestamp = datetime.now(timezone.utc)
         reset_vehicles = 0
         for definition in DEMO_VEHICLES:
@@ -151,8 +159,12 @@ class DemoScenarioService:
         self.session.flush()
         return {
             "events": deleted_events,
+            "agent_states": deleted_agent_states,
+            "commands": deleted_commands,
+            "reservations": deleted_reservations,
             "missions": deleted_missions,
             "orders": deleted_orders,
+            "batches": deleted_batches,
             "vehicles": reset_vehicles,
         }
 

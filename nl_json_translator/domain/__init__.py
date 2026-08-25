@@ -2,6 +2,10 @@
 
 from .enums import (
     AgentEventType,
+    AgentCommandStatus,
+    AgentCommandType,
+    AgentStatus,
+    BatchStatus,
     LocationType,
     MissionStatus,
     MissionStepStatus,
@@ -20,6 +24,10 @@ from .schemas import (
 
 __all__ = [
     "AgentEventType",
+    "AgentCommandStatus",
+    "AgentCommandType",
+    "AgentStatus",
+    "BatchStatus",
     "Cargo",
     "LocationType",
     "MissionStatus",

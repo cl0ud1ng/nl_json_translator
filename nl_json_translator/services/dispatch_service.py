@@ -95,79 +95,142 @@ class DispatchService:
     def dispatch_order(
         self, order_id: str, *, now: Optional[datetime] = None
     ) -> DispatchResult:
-        order = self.orders.get(order_id)
-        if not order:
-            raise ValueError(f'Unknown order "{order_id}"')
-        if order.status.value != "RESOLVED":
-            raise ValueError(f'Order "{order_id}" is not RESOLVED')
-        pickup_node_id, dropoff_node_id = self._location_nodes(order)
-        transport_route = self.routing.shortest_route(
-            self.map_data, pickup_node_id, dropoff_node_id
-        )
-        if not transport_route:
-            raise ValueError(f'No route for order "{order_id}" pickup to dropoff')
+        return self.dispatch_batch((order_id,), require_all=True, now=now)[0]
 
+    def dispatch_batch(
+        self,
+        order_ids: tuple[str, ...],
+        *,
+        require_all: bool,
+        now: Optional[datetime] = None,
+    ) -> tuple[DispatchResult, ...]:
+        """Globally match ready orders to distinct currently idle vehicles."""
+
+        if not order_ids or len(set(order_ids)) != len(order_ids):
+            raise ValueError("order_ids must be a non-empty unique tuple")
         current_time = now or datetime.now(timezone.utc)
-        candidates = tuple(
-            self._evaluate_vehicle(
-                order,
-                vehicle,
-                pickup_node_id,
-                transport_route,
-                current_time,
+        orders: list[OrderData] = []
+        routes: dict[str, RoutePlan] = {}
+        evaluations: dict[str, tuple[CandidateEvaluation, ...]] = {}
+        for order_id in order_ids:
+            order = self.orders.get(order_id)
+            if not order:
+                raise ValueError(f'Unknown order "{order_id}"')
+            if order.status.value != "RESOLVED":
+                raise ValueError(f'Order "{order_id}" is not RESOLVED')
+            pickup_node_id, dropoff_node_id = self._location_nodes(order)
+            route = self.routing.shortest_route(
+                self.map_data, pickup_node_id, dropoff_node_id
             )
-            for vehicle in self.vehicles.list_all()
+            if not route:
+                raise ValueError(f'No route for order "{order_id}" pickup to dropoff')
+            orders.append(order)
+            routes[order.id] = route
+            evaluations[order.id] = tuple(
+                self._evaluate_vehicle(
+                    order,
+                    vehicle,
+                    pickup_node_id,
+                    route,
+                    current_time,
+                )
+                for vehicle in self.vehicles.list_all()
+            )
+
+        selected_by_order = _minimum_cost_matching(
+            orders,
+            evaluations,
+            require_all=require_all,
         )
-        eligible = [candidate for candidate in candidates if candidate.eligible]
-        if not eligible:
-            return DispatchResult(order.id, None, None, None, transport_route, candidates)
-        selected = min(eligible, key=lambda candidate: (candidate.cost, candidate.vehicle_id))
+        if require_all and len(selected_by_order) != len(orders):
+            return tuple(
+                DispatchResult(
+                    order.id,
+                    None,
+                    None,
+                    None,
+                    routes[order.id],
+                    evaluations[order.id],
+                )
+                for order in orders
+            )
+
+        results: list[DispatchResult] = []
+        with self.session.begin_nested():
+            for order in orders:
+                selected = selected_by_order.get(order.id)
+                if not selected:
+                    results.append(
+                        DispatchResult(
+                            order.id,
+                            None,
+                            None,
+                            None,
+                            routes[order.id],
+                            evaluations[order.id],
+                        )
+                    )
+                    continue
+                results.append(
+                    self._assign_selected(
+                        order,
+                        selected,
+                        routes[order.id],
+                        evaluations[order.id],
+                    )
+                )
+        return tuple(results)
+
+    def _assign_selected(
+        self,
+        order: OrderData,
+        selected: CandidateEvaluation,
+        transport_route: RoutePlan,
+        candidates: tuple[CandidateEvaluation, ...],
+    ) -> DispatchResult:
         vehicle = self.vehicles.get(selected.vehicle_id)
         if not vehicle or not selected.reposition_route:
             raise DispatchConflictError("selected vehicle disappeared before assignment")
-
-        with self.session.begin_nested():
-            if not self.orders.claim_for_assignment(order.id):
-                raise DispatchConflictError(f'Order "{order.id}" was already assigned')
-            if not self.vehicles.reserve(vehicle.id):
-                raise DispatchConflictError(f'Vehicle "{vehicle.id}" is no longer idle')
-            mission = self.missions.create(
-                order_id=order.id,
-                vehicle_id=vehicle.id,
-                steps=self._build_steps(
-                    vehicle,
-                    pickup_node_id,
-                    dropoff_node_id,
-                    selected.reposition_route,
-                    transport_route,
-                ),
-            )
-            common = {
-                "order_id": order.id,
-                "mission_id": mission.id,
-                "vehicle_id": vehicle.id,
-            }
-            self.events.append(
-                event_type=AgentEventType.ORDER_ASSIGNED,
-                aggregate_type="order",
-                aggregate_id=order.id,
-                payload={"cost": selected.cost},
-                **common,
-            )
-            self.events.append(
-                event_type=AgentEventType.VEHICLE_RESERVED,
-                aggregate_type="vehicle",
-                aggregate_id=vehicle.id,
-                **common,
-            )
-            self.events.append(
-                event_type=AgentEventType.MISSION_CREATED,
-                aggregate_type="mission",
-                aggregate_id=mission.id,
-                payload={"step_count": len(mission.steps)},
-                **common,
-            )
-
+        if not self.orders.claim_for_assignment(order.id):
+            raise DispatchConflictError(f'Order "{order.id}" was already assigned')
+        if not self.vehicles.reserve(vehicle.id):
+            raise DispatchConflictError(f'Vehicle "{vehicle.id}" is no longer idle')
+        mission = self.missions.create(
+            order_id=order.id,
+            vehicle_id=vehicle.id,
+            steps=self._build_steps(
+                vehicle,
+                self._location_nodes(order)[0],
+                self._location_nodes(order)[1],
+                selected.reposition_route,
+                transport_route,
+            ),
+        )
+        common = {
+            "order_id": order.id,
+            "mission_id": mission.id,
+            "vehicle_id": vehicle.id,
+        }
+        self.events.append(
+            event_type=AgentEventType.ORDER_ASSIGNED,
+            aggregate_type="order",
+            aggregate_id=order.id,
+            payload={"cost": selected.cost},
+            **common,
+        )
+        self.events.append(
+            event_type=AgentEventType.VEHICLE_RESERVED,
+            aggregate_type="vehicle",
+            aggregate_id=vehicle.id,
+            **common,
+        )
+        self.events.append(
+            event_type=AgentEventType.MISSION_CREATED,
+            aggregate_type="mission",
+            aggregate_id=mission.id,
+            payload={"step_count": len(mission.steps)},
+            **common,
+        )
         return DispatchResult(
             order.id,
             mission,
@@ -286,6 +349,57 @@ def _route_details(route: RoutePlan) -> dict[str, object]:
         "distance": route.distance,
         "travel_time": route.travel_time,
     }
+
+
+def _minimum_cost_matching(
+    orders: list[OrderData],
+    evaluations: dict[str, tuple[CandidateEvaluation, ...]],
+    *,
+    require_all: bool,
+) -> dict[str, CandidateEvaluation]:
+    best_score: tuple[int, float, tuple[str, ...]] | None = None
+    best: dict[str, CandidateEvaluation] = {}
+
+    def visit(
+        index: int,
+        used_vehicle_ids: set[str],
+        selected: dict[str, CandidateEvaluation],
+    ) -> None:
+        nonlocal best_score, best
+        if index == len(orders):
+            if require_all and len(selected) != len(orders):
+                return
+            cost = round(sum(item.cost or 0.0 for item in selected.values()), 6)
+            vehicle_order = tuple(
+                selected[order.id].vehicle_id if order.id in selected else "~"
+                for order in orders
+            )
+            score = (-len(selected), cost, vehicle_order)
+            if best_score is None or score < best_score:
+                best_score = score
+                best = dict(selected)
+            return
+
+        order = orders[index]
+        candidates = sorted(
+            (
+                candidate
+                for candidate in evaluations[order.id]
+                if candidate.eligible and candidate.vehicle_id not in used_vehicle_ids
+            ),
+            key=lambda item: (item.cost, item.vehicle_id),
+        )
+        for candidate in candidates:
+            selected[order.id] = candidate
+            used_vehicle_ids.add(candidate.vehicle_id)
+            visit(index + 1, used_vehicle_ids, selected)
+            used_vehicle_ids.remove(candidate.vehicle_id)
+            selected.pop(order.id, None)
+        if not require_all:
+            visit(index + 1, used_vehicle_ids, selected)
+
+    visit(0, set(), {})
+    return best
 
 
 def _as_utc(value: datetime) -> datetime:

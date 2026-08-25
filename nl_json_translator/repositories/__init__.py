@@ -1,6 +1,8 @@
 """Repository interfaces over persistent transport state."""
 
 from .events import AgentEventData, EventRepository
+from .batches import BatchRepository
+from .commands import AgentCommandData, CommandRepository
 from .locations import LocationData, LocationRepository
 from .maps import MapData, MapEdgeData, MapLocationData, MapNodeData, MapRepository
 from .missions import (
@@ -10,10 +12,14 @@ from .missions import (
     MissionStepDefinition,
 )
 from .orders import OrderData, OrderRepository
+from .reservations import ReservationRepository
 from .vehicles import VehicleData, VehicleRepository
 
 __all__ = [
     "AgentEventData",
+    "AgentCommandData",
+    "BatchRepository",
+    "CommandRepository",
     "EventRepository",
     "LocationData",
     "LocationRepository",
@@ -28,6 +34,7 @@ __all__ = [
     "MissionStepDefinition",
     "OrderData",
     "OrderRepository",
+    "ReservationRepository",
     "VehicleData",
     "VehicleRepository",
 ]

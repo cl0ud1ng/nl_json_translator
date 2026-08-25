@@ -92,7 +92,13 @@ class OrderRepository:
             update(TransportOrderRecord)
             .where(
                 TransportOrderRecord.id == order_id,
-                TransportOrderRecord.status == OrderStatus.ASSIGNED.value,
+                TransportOrderRecord.status.in_(
+                    [
+                        OrderStatus.ASSIGNED.value,
+                        OrderStatus.PICKING.value,
+                        OrderStatus.IN_TRANSIT.value,
+                    ]
+                ),
             )
             .values(status=OrderStatus.DELIVERED.value)
         )

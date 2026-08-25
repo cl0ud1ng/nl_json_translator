@@ -144,6 +144,29 @@ class DispatchServiceTests(unittest.TestCase):
         self.assertEqual(len(assigned), 2)
         self.assertEqual(len({result.selected_vehicle_id for result in assigned}), 2)
 
+    def test_batch_matching_preserves_specialized_vehicle_for_constrained_order(self):
+        self._add_order("order_generic", pickup="loc_a", dropoff="loc_b")
+        self._add_order(
+            "order_cold",
+            pickup="loc_a",
+            dropoff="loc_b",
+            cargo={
+                "name": "冷链药品",
+                "quantity": 1,
+                "weight_kg": 100,
+                "required_capabilities": ["cold_chain"],
+            },
+        )
+
+        with self.database.session() as session:
+            results = DispatchService(session).dispatch_batch(
+                ("order_generic", "order_cold"), require_all=True
+            )
+
+        selected = {item.order_id: item.selected_vehicle_id for item in results}
+        self.assertEqual(selected["order_cold"], "vehicle_demo_01")
+        self.assertNotEqual(selected["order_generic"], "vehicle_demo_01")
+
     def test_rejects_stale_telemetry(self):
         self._add_order(
             "order_vehicle_01",
