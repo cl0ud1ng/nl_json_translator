@@ -41,6 +41,7 @@ class OrderService:
         intent: TransportIntentDraft | dict[str, Any],
         *,
         idempotency_key: Optional[str] = None,
+        batch_id: Optional[str] = None,
     ) -> OrderCreationResult:
         draft = (
             intent
@@ -85,6 +86,7 @@ class OrderService:
 
         record = TransportOrderRecord(
             id=f"order_{uuid4().hex}",
+            batch_id=batch_id,
             pickup_location_id=pickup.location_id,
             dropoff_location_id=dropoff.location_id,
             pickup_location_text=draft.pickup_location_text,

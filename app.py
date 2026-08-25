@@ -22,6 +22,7 @@ from nl_json_translator.map_executor import execute_command, pretty_json
 from nl_json_translator.prompts import build_messages
 from nl_json_translator.repositories.maps import MapRepository
 from nl_json_translator.repositories.vehicles import VehicleRepository
+from nl_json_translator.services.demo_scenario_service import DemoScenarioService
 from nl_json_translator.services.dispatch_service import DispatchResult, DispatchService
 from nl_json_translator.services.fleet_simulation_service import (
     FleetRuntimeFrame,
@@ -53,19 +54,74 @@ def main() -> None:
         start_point = st.selectbox("未分配时的路径预览起点", location_names, index=0)
         show_prompt = st.toggle("显示 Prompt", value=False)
         st.divider()
-        st.caption("自然语言 → 订单 → 中央调度 → Mission → 多车计划路线")
+        st.caption("三车 → 两个取货点 → 两个目标点 → 协同路径 → 动态执行")
         if st.button("清空结果", width="stretch"):
             st.session_state.last_result = None
             st.session_state.last_frame_index = 0
             st.rerun()
 
-    request_text = st.text_area(
-        "自然语言运输请求",
-        value=st.session_state.get("request_text", DEFAULT_REQUEST),
-        height=90,
+    demo_mode = st.radio(
+        "演示模式",
+        ["三车双取送场景", "自然语言单订单"],
+        horizontal=True,
     )
-    st.session_state.request_text = request_text
-    col_run, col_dispatch, col_replay = st.columns(3)
+    request_text = st.session_state.get("request_text", DEFAULT_REQUEST)
+    pickup_locations = ("A", "C")
+    dropoff_locations = ("B", "lab")
+    cargo_names = ("零件箱 A", "零件箱 B", "零件箱 C")
+    reset_before_run = False
+    if demo_mode == "三车双取送场景":
+        st.info(
+            "一次创建 3 张独立订单并分配给 3 辆车；地点集合严格包含 2 个取货点和 "
+            "2 个目标点，每辆车只执行一个取货—送货对。"
+        )
+        pickup_col, dropoff_col = st.columns(2)
+        with pickup_col:
+            st.markdown("**两个取货地点**")
+            pickup_one = st.selectbox(
+                "取货地点 1",
+                location_names,
+                index=_location_index(location_names, "A"),
+            )
+            pickup_two = st.selectbox(
+                "取货地点 2",
+                location_names,
+                index=_location_index(location_names, "C"),
+            )
+            pickup_locations = (pickup_one, pickup_two)
+        with dropoff_col:
+            st.markdown("**两个目标地点**")
+            dropoff_one = st.selectbox(
+                "目标地点 1",
+                location_names,
+                index=_location_index(location_names, "B"),
+            )
+            dropoff_two = st.selectbox(
+                "目标地点 2",
+                location_names,
+                index=_location_index(location_names, "lab"),
+            )
+            dropoff_locations = (dropoff_one, dropoff_two)
+        cargo_columns = st.columns(3)
+        cargo_names = tuple(
+            column.text_input(f"车辆任务 {index + 1} 货物", value=default)
+            for index, (column, default) in enumerate(
+                zip(cargo_columns, ("零件箱 A", "零件箱 B", "零件箱 C"))
+            )
+        )
+        reset_before_run = st.checkbox(
+            "创建前重置演示订单、Mission 和三辆车初始位置",
+            value=True,
+        )
+    else:
+        request_text = st.text_area(
+            "自然语言运输请求",
+            value=request_text,
+            height=90,
+        )
+        st.session_state.request_text = request_text
+
+    col_run, col_dispatch, col_replay, col_reset = st.columns(4)
     run_clicked = col_run.button("创建订单并播放", type="primary", width="stretch")
     dispatch_clicked = col_dispatch.button("调度并播放全部任务", width="stretch")
     replay_clicked = col_replay.button(
@@ -79,15 +135,25 @@ def main() -> None:
             )
         ),
     )
+    reset_clicked = col_reset.button("重置演示数据", width="stretch")
 
     if run_clicked:
         with st.spinner("Pipeline running..."):
-            st.session_state.last_result = run_pipeline(
-                request_text=request_text,
-                model=model,
-                start_point=start_point,
-                database_url=database_url,
-            )
+            if demo_mode == "三车双取送场景":
+                st.session_state.last_result = run_three_vehicle_scenario(
+                    pickup_locations=pickup_locations,
+                    dropoff_locations=dropoff_locations,
+                    cargo_names=cargo_names,
+                    database_url=database_url,
+                    reset_before_run=reset_before_run,
+                )
+            else:
+                st.session_state.last_result = run_pipeline(
+                    request_text=request_text,
+                    model=model,
+                    start_point=start_point,
+                    database_url=database_url,
+                )
             st.session_state.last_frame_index = 0
             st.session_state.autoplay = True
     if dispatch_clicked:
@@ -96,7 +162,14 @@ def main() -> None:
         st.session_state.autoplay = True
     if replay_clicked:
         st.session_state.last_frame_index = 0
+        st.session_state.pop("fleet_runtime_slider", None)
         st.session_state.autoplay = True
+    if reset_clicked:
+        st.session_state.dispatch_notice = reset_demo_runtime(database_url)
+        st.session_state.last_result = None
+        st.session_state.last_frame_index = 0
+        st.session_state.pop("fleet_runtime_slider", None)
+        st.rerun()
     notice = st.session_state.pop("dispatch_notice", None)
     if notice:
         st.success(notice)
@@ -129,6 +202,13 @@ def _location_names(database_url: str) -> list[str]:
         return names or ["A"]
     finally:
         database.dispose()
+
+
+def _location_index(location_names: list[str], preferred: str) -> int:
+    try:
+        return location_names.index(preferred)
+    except ValueError:
+        return 0
 
 
 def run_pipeline(
@@ -247,6 +327,96 @@ def run_pipeline(
         if database:
             database.dispose()
     return result
+
+
+def run_three_vehicle_scenario(
+    *,
+    pickup_locations: tuple[str, str],
+    dropoff_locations: tuple[str, str],
+    cargo_names: tuple[str, str, str],
+    database_url: str,
+    reset_before_run: bool = True,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "natural_language": None,
+        "model": "three-vehicle-scenario",
+        "translation": None,
+        "validation": {"ok": False},
+        "order": None,
+        "dispatch": None,
+        "internal_mission_command": None,
+        "execution": None,
+        "frames": [],
+        "fleet_simulation": None,
+        "simulation_finalized": False,
+        "prompt_messages": [],
+        "logs": [],
+    }
+    database = Database(database_url)
+    try:
+        with database.session() as session:
+            scenario_service = DemoScenarioService(session)
+            if reset_before_run:
+                reset = scenario_service.reset_demo_runtime()
+                result["logs"].append(
+                    f"Reset demo runtime before scenario: {reset}."
+                )
+            _refresh_demo_telemetry(session)
+            scenario = scenario_service.create_three_vehicle_scenario(
+                pickup_location_texts=pickup_locations,
+                dropoff_location_texts=dropoff_locations,
+                cargo_names=cargo_names,
+            )
+            result["order"] = {
+                "batch_id": scenario.batch_id,
+                "status": "ASSIGNED",
+                "pickup_locations": list(pickup_locations),
+                "dropoff_locations": list(dropoff_locations),
+                "orders": [
+                    {
+                        "id": order.order_id,
+                        "status": "ASSIGNED",
+                        "formal_order": (
+                            order.formal_order.model_dump(mode="json")
+                            if order.formal_order
+                            else None
+                        ),
+                    }
+                    for order in scenario.orders
+                ],
+            }
+            result["dispatch"] = {
+                "assigned": True,
+                "assigned_count": 3,
+                "results": [_dispatch_dict(item) for item in scenario.dispatches],
+            }
+            result["fleet_simulation"] = scenario.simulation
+            result["validation"] = {
+                "ok": True,
+                "message": "三车、双取货点、双目标点场景已完成无冲突规划。",
+            }
+            result["logs"].append(
+                f"Created batch {scenario.batch_id} with 3 independent vehicle missions."
+            )
+    except Exception as exc:
+        result["validation"] = {"ok": False, "message": str(exc)}
+        result["logs"].append(f"Three-vehicle scenario failed: {exc}")
+    finally:
+        database.dispose()
+    return result
+
+
+def reset_demo_runtime(database_url: str) -> str:
+    database = Database(database_url)
+    try:
+        with database.session() as session:
+            reset = DemoScenarioService(session).reset_demo_runtime()
+        return (
+            f"演示数据已重置：删除 {reset['orders']} 个订单、{reset['missions']} 个 Mission，"
+            f"恢复 {reset['vehicles']} 辆车。"
+        )
+    finally:
+        database.dispose()
 
 
 def _resolution_dict(resolution: Optional[LocationResolution]) -> Optional[dict[str, Any]]:
@@ -402,6 +572,9 @@ def render_fleet_dashboard(database_url: str) -> None:
                     "状态": vehicle.status.value,
                     "电量": f"{vehicle.battery_level:.0f}%",
                     "节点": vehicle.node_id,
+                    "货物": vehicle.cargo_name or "—",
+                    "取货": vehicle.pickup_location_id or "—",
+                    "目标": vehicle.dropoff_location_id or "—",
                     "订单": vehicle.order_id or "—",
                 }
                 for vehicle in snapshot.vehicles
@@ -462,7 +635,10 @@ def render_result(
     metric_cols[0].metric("意图来源", translation.get("source", "none"))
     metric_cols[1].metric("意图校验", "通过" if validation.get("ok") else "失败")
     metric_cols[2].metric("订单状态", order.get("status", "未创建"))
-    metric_cols[3].metric("调度车辆", dispatch.get("selected_vehicle_id") or "未分配")
+    assigned_vehicle_label = dispatch.get("selected_vehicle_id")
+    if not assigned_vehicle_label and dispatch.get("assigned_count"):
+        assigned_vehicle_label = f"{dispatch['assigned_count']} 辆车"
+    metric_cols[3].metric("调度车辆", assigned_vehicle_label or "未分配")
     if validation.get("ok"):
         st.success(validation.get("message"))
     else:
@@ -490,6 +666,8 @@ def render_result(
         result["simulation_finalized"] = True
         if result.get("order") and completed_count:
             result["order"]["status"] = "DELIVERED"
+            for order in result["order"].get("orders", []):
+                order["status"] = "DELIVERED"
         result["logs"].append(
             f"Fleet playback completed and persisted {completed_count} Mission(s)."
         )
@@ -616,6 +794,9 @@ def show_fleet_runtime_frame(
     *,
     selected_vehicle_id: Optional[str],
 ) -> None:
+    vehicle_views = {
+        vehicle.id: vehicle for vehicle in simulation.snapshot.vehicles
+    }
     map_slot.image(
         render_fleet_svg(
             map_data,
@@ -629,11 +810,13 @@ def show_fleet_runtime_frame(
     table_slot.dataframe(
         [
             {
-                "车辆": state.vehicle_id,
+                "车辆": vehicle_views[state.vehicle_id].name,
                 "阶段": state.phase,
                 "位置": state.node_id,
                 "货物": state.cargo_name or "—",
                 "载货": "是" if state.carrying_cargo else "否",
+                "取货": vehicle_views[state.vehicle_id].pickup_location_id,
+                "目标": vehicle_views[state.vehicle_id].dropoff_location_id,
                 "订单": state.order_id,
             }
             for state in active_states

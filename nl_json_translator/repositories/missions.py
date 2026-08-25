@@ -132,6 +132,35 @@ class MissionRepository:
         self.session.flush()
         return _to_data(record)
 
+    def set_step_route(
+        self,
+        mission_id: str,
+        step_type: MissionStepType,
+        *,
+        node_ids: tuple[str, ...],
+        wait_count: int,
+    ) -> bool:
+        statement = (
+            select(MissionRecord)
+            .options(selectinload(MissionRecord.steps))
+            .where(MissionRecord.id == mission_id, MissionRecord.active.is_(True))
+        )
+        record = self.session.scalar(statement)
+        if not record:
+            return False
+        step = next(
+            (item for item in record.steps if item.step_type == step_type.value),
+            None,
+        )
+        if not step:
+            return False
+        details = dict(step.details_json)
+        details["planned_node_ids"] = list(node_ids)
+        details["wait_count"] = wait_count
+        step.details_json = details
+        self.session.flush()
+        return True
+
 
 def _to_data(record: MissionRecord) -> MissionData:
     return MissionData(

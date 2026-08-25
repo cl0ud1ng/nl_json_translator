@@ -587,7 +587,8 @@ POST   /missions/{id}/replan
 - 阶段 3 已进入开发：当前已有三辆差异化 Demo 车辆、确定性 DispatchService、活动 Mission 唯一约束、批量分配和多车 SVG 调度总览。
 - 阶段 3 已支持进程内同步播放多个 Mission：车辆会依次前往取货点、装货、载货运输、卸货，并在动画结束后提交最终状态。
 - 阶段 3 尚未实现各 VehicleAgent 独立异步推进和逐时间片状态落库；当前由统一仿真运行时生成同步帧。
-- 阶段 4 的离散时间片、RouteReservation、Cooperative A*、WAIT 和冲突重规划尚未实现。
+- 阶段 4 已实现进程内离散时间片、Cooperative A*、普通节点容量、双向边预约和 WAIT/绕行；三车同步帧会验证节点与迎面边冲突。
+- 阶段 4 尚未实现 `route_reservations` 数据库表、预约恢复和阻塞后的在线局部重规划。
 - 阶段 5 尚未开始。
 
 ### 阶段 0：领域协议与工程准备

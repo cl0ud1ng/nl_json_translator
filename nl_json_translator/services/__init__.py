@@ -7,12 +7,24 @@ from .dispatch_service import (
     DispatchResult,
     DispatchService,
 )
+from .demo_scenario_service import (
+    DemoScenarioService,
+    ScenarioStateError,
+    ThreeVehicleScenarioResult,
+)
+from .cooperative_routing_service import (
+    CooperativePlanningError,
+    CooperativeRoutingService,
+    ReservationTable,
+    TimedRoute,
+)
 from .fleet_view_service import FleetSnapshot, FleetVehicleView, FleetViewService
 from .fleet_simulation_service import (
     FleetRuntimeFrame,
     FleetSimulation,
     FleetSimulationService,
     VehicleRuntimeState,
+    find_runtime_conflicts,
 )
 from .location_resolver import (
     AmbiguousLocationError,
@@ -27,10 +39,13 @@ from .routing_service import RoutePlan, RoutingService
 __all__ = [
     "AmbiguousLocationError",
     "CandidateEvaluation",
+    "CooperativePlanningError",
+    "CooperativeRoutingService",
     "DispatchConflictError",
     "DispatchPolicy",
     "DispatchResult",
     "DispatchService",
+    "DemoScenarioService",
     "FleetSnapshot",
     "FleetRuntimeFrame",
     "FleetSimulation",
@@ -42,8 +57,13 @@ __all__ = [
     "LocationResolver",
     "OrderCreationResult",
     "OrderService",
+    "ReservationTable",
     "RoutePlan",
     "RoutingService",
+    "ScenarioStateError",
+    "ThreeVehicleScenarioResult",
+    "TimedRoute",
     "VehicleRuntimeState",
+    "find_runtime_conflicts",
     "UnknownLocationError",
 ]
