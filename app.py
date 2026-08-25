@@ -18,11 +18,16 @@ from nl_json_translator.infrastructure.database import Database, default_databas
 from nl_json_translator.infrastructure.demo_map import DEMO_VEHICLES
 from nl_json_translator.infrastructure.orm_models import VehicleRecord
 from nl_json_translator.infrastructure.seed_demo_data import seed_demo_data
-from nl_json_translator.map_executor import build_runtime_frames, execute_command, pretty_json
+from nl_json_translator.map_executor import execute_command, pretty_json
 from nl_json_translator.prompts import build_messages
 from nl_json_translator.repositories.maps import MapRepository
 from nl_json_translator.repositories.vehicles import VehicleRepository
 from nl_json_translator.services.dispatch_service import DispatchResult, DispatchService
+from nl_json_translator.services.fleet_simulation_service import (
+    FleetRuntimeFrame,
+    FleetSimulation,
+    FleetSimulationService,
+)
 from nl_json_translator.services.fleet_view_service import FleetViewService
 from nl_json_translator.services.location_resolver import LocationResolution
 from nl_json_translator.services.order_service import OrderService
@@ -62,11 +67,17 @@ def main() -> None:
     st.session_state.request_text = request_text
     col_run, col_dispatch, col_replay = st.columns(3)
     run_clicked = col_run.button("创建订单并播放", type="primary", width="stretch")
-    dispatch_clicked = col_dispatch.button("调度全部待处理订单", width="stretch")
+    dispatch_clicked = col_dispatch.button("调度并播放全部任务", width="stretch")
     replay_clicked = col_replay.button(
         "重播轨迹",
         width="stretch",
-        disabled=not bool(st.session_state.last_result and st.session_state.last_result.get("frames")),
+        disabled=not bool(
+            st.session_state.last_result
+            and (
+                st.session_state.last_result.get("fleet_simulation")
+                or st.session_state.last_result.get("frames")
+            )
+        ),
     )
 
     if run_clicked:
@@ -80,7 +91,9 @@ def main() -> None:
             st.session_state.last_frame_index = 0
             st.session_state.autoplay = True
     if dispatch_clicked:
-        st.session_state.dispatch_notice = dispatch_ready_orders(database_url)
+        st.session_state.last_result = run_fleet_dispatch(database_url)
+        st.session_state.last_frame_index = 0
+        st.session_state.autoplay = True
     if replay_clicked:
         st.session_state.last_frame_index = 0
         st.session_state.autoplay = True
@@ -95,6 +108,7 @@ def main() -> None:
             st.session_state.last_result,
             show_prompt,
             autoplay=st.session_state.get("autoplay", False),
+            database_url=database_url,
         )
         st.session_state.autoplay = False
 
@@ -131,6 +145,8 @@ def run_pipeline(
         "internal_mission_command": None,
         "execution": None,
         "frames": [],
+        "fleet_simulation": None,
+        "simulation_finalized": False,
         "prompt_messages": build_messages(request_text) if request_text.strip() else [],
         "logs": [],
     }
@@ -179,6 +195,7 @@ def run_pipeline(
                 result["logs"].append(
                     "No eligible idle vehicle is currently available; order remains RESOLVED."
                 )
+                _attach_active_fleet_simulation(result, session)
                 return result
             result["order"]["status"] = "ASSIGNED"
             result["logs"].append(
@@ -219,11 +236,9 @@ def run_pipeline(
             result["execution"] = execute_command(
                 internal_command, repository=repository, start=execution_start
             )
-            result["frames"] = build_runtime_frames(
-                internal_command, repository=repository, start=execution_start
-            )
+            _attach_active_fleet_simulation(result, session)
             result["logs"].append(
-                f"Assigned vehicle path preview started from {execution_start}."
+                f"Fleet simulation starts from persisted vehicle node {execution_start}."
             )
     except Exception as exc:
         result["validation"] = {"ok": False, "message": str(exc)}
@@ -275,15 +290,63 @@ def _dispatch_dict(result: DispatchResult) -> dict[str, Any]:
     }
 
 
-def dispatch_ready_orders(database_url: str) -> str:
+def run_fleet_dispatch(database_url: str) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "natural_language": None,
+        "model": "deterministic-dispatch",
+        "translation": None,
+        "validation": {"ok": True, "message": "待处理订单已进入确定性调度。"},
+        "order": None,
+        "dispatch": None,
+        "internal_mission_command": None,
+        "execution": None,
+        "frames": [],
+        "fleet_simulation": None,
+        "simulation_finalized": False,
+        "prompt_messages": [],
+        "logs": [],
+    }
     database = Database(database_url)
     try:
         with database.session() as session:
             _refresh_demo_telemetry(session)
             results = DispatchService(session).dispatch_all_ready()
-        assigned = sum(result.assigned for result in results)
-        waiting = len(results) - assigned
-        return f"调度完成：新分配 {assigned} 个订单，仍待车辆 {waiting} 个订单。"
+            assigned = sum(item.assigned for item in results)
+            waiting = len(results) - assigned
+            result["dispatch"] = {
+                "assigned": assigned > 0,
+                "assigned_count": assigned,
+                "waiting_count": waiting,
+                "results": [_dispatch_dict(item) for item in results],
+            }
+            result["logs"].append(
+                f"Dispatch assigned {assigned} order(s); {waiting} order(s) remain waiting."
+            )
+            _attach_active_fleet_simulation(result, session)
+            if not result["fleet_simulation"].mission_ids:
+                result["validation"] = {
+                    "ok": False,
+                    "message": "当前没有可播放的活动 Mission。",
+                }
+        return result
+    finally:
+        database.dispose()
+
+
+def _attach_active_fleet_simulation(result: dict[str, Any], session: Any) -> None:
+    map_data = MapRepository(session).load()
+    snapshot = FleetViewService(session).snapshot()
+    result["fleet_simulation"] = FleetSimulationService(session).build(
+        map_data,
+        snapshot,
+    )
+
+
+def _complete_fleet_simulation(database_url: str, simulation: FleetSimulation) -> int:
+    database = Database(database_url)
+    try:
+        with database.session() as session:
+            return FleetSimulationService(session).complete(simulation)
     finally:
         database.dispose()
 
@@ -380,13 +443,20 @@ def render_fleet_dashboard(database_url: str) -> None:
             st.info("尚无调度事件。")
 
 
-def render_result(result: dict[str, Any], show_prompt: bool, *, autoplay: bool) -> None:
+def render_result(
+    result: dict[str, Any],
+    show_prompt: bool,
+    *,
+    autoplay: bool,
+    database_url: str,
+) -> None:
     translation = result.get("translation") or {}
     validation = result.get("validation") or {}
     order = result.get("order") or {}
     dispatch = result.get("dispatch") or {}
     execution = result.get("execution") or {}
     frames = result.get("frames") or []
+    fleet_simulation = result.get("fleet_simulation")
     st.subheader("运行结果")
     metric_cols = st.columns(4)
     metric_cols[0].metric("意图来源", translation.get("source", "none"))
@@ -399,9 +469,32 @@ def render_result(result: dict[str, Any], show_prompt: bool, *, autoplay: bool) 
         st.error(validation.get("message"))
     if order.get("status") == "NEEDS_REVIEW":
         st.warning("地点存在歧义，订单已进入 NEEDS_REVIEW，未执行路径。")
-    if dispatch and not dispatch.get("assigned"):
+    if (
+        dispatch
+        and not dispatch.get("assigned")
+        and not (fleet_simulation and fleet_simulation.mission_ids)
+    ):
         st.warning("当前没有满足硬约束的空闲车辆，订单保持 RESOLVED。")
-    render_runtime(frames, autoplay=autoplay)
+    playback_completed = False
+    if fleet_simulation and fleet_simulation.mission_ids:
+        playback_completed = render_fleet_runtime(
+            fleet_simulation,
+            database_url=database_url,
+            autoplay=autoplay,
+        )
+    else:
+        render_runtime(frames, autoplay=autoplay)
+
+    if playback_completed and not result.get("simulation_finalized"):
+        completed_count = _complete_fleet_simulation(database_url, fleet_simulation)
+        result["simulation_finalized"] = True
+        if result.get("order") and completed_count:
+            result["order"]["status"] = "DELIVERED"
+        result["logs"].append(
+            f"Fleet playback completed and persisted {completed_count} Mission(s)."
+        )
+        st.session_state.autoplay = False
+        st.rerun()
 
     tab_order, tab_dispatch, tab_intent, tab_internal, tab_prompt, tab_log = st.tabs(
         ["订单", "调度决策", "运输意图", "内部执行", "Prompt", "日志"]
@@ -431,7 +524,128 @@ def render_result(result: dict[str, Any], show_prompt: bool, *, autoplay: bool) 
         else:
             st.write("在侧边栏启用“显示 Prompt”以查看。")
     with tab_log:
-        st.json(result, expanded=False)
+        st.json(
+            {
+                key: value
+                for key, value in result.items()
+                if key != "fleet_simulation"
+            },
+            expanded=False,
+        )
+
+
+def render_fleet_runtime(
+    simulation: FleetSimulation,
+    *,
+    database_url: str,
+    autoplay: bool,
+) -> bool:
+    st.subheader("动态多车取货与送货过程")
+    database = Database(database_url)
+    try:
+        with database.session() as session:
+            map_data = MapRepository(session).load()
+    finally:
+        database.dispose()
+
+    labels = {
+        vehicle.id: vehicle.name
+        for vehicle in simulation.snapshot.vehicles
+        if vehicle.mission_id in simulation.mission_ids
+    }
+    selected = st.selectbox(
+        "动态过程聚焦车辆",
+        [""] + list(labels),
+        format_func=lambda value: "全部执行车辆" if not value else labels[value],
+        key="runtime_selected_vehicle",
+    )
+    map_slot, table_slot, caption_slot, progress_slot = (
+        st.empty(),
+        st.empty(),
+        st.empty(),
+        st.empty(),
+    )
+    frames = simulation.frames
+    if autoplay:
+        for index, frame in enumerate(frames):
+            show_fleet_runtime_frame(
+                map_slot,
+                table_slot,
+                caption_slot,
+                progress_slot,
+                map_data,
+                simulation,
+                frame,
+                selected_vehicle_id=selected or None,
+            )
+            st.session_state.last_frame_index = index
+            time.sleep(FRAME_DELAY_SECONDS)
+        return True
+
+    max_index = len(frames) - 1
+    selected_index = st.slider(
+        "多车执行时间片",
+        min_value=0,
+        max_value=max_index,
+        value=min(st.session_state.last_frame_index, max_index),
+        disabled=max_index == 0,
+        key="fleet_runtime_slider",
+    )
+    st.session_state.last_frame_index = selected_index
+    show_fleet_runtime_frame(
+        map_slot,
+        table_slot,
+        caption_slot,
+        progress_slot,
+        map_data,
+        simulation,
+        frames[selected_index],
+        selected_vehicle_id=selected or None,
+    )
+    return False
+
+
+def show_fleet_runtime_frame(
+    map_slot: Any,
+    table_slot: Any,
+    caption_slot: Any,
+    progress_slot: Any,
+    map_data: Any,
+    simulation: FleetSimulation,
+    frame: FleetRuntimeFrame,
+    *,
+    selected_vehicle_id: Optional[str],
+) -> None:
+    map_slot.image(
+        render_fleet_svg(
+            map_data,
+            simulation.snapshot,
+            selected_vehicle_id=selected_vehicle_id,
+            runtime_frame=frame,
+        ),
+        width="stretch",
+    )
+    active_states = [state for state in frame.vehicles if state.mission_id]
+    table_slot.dataframe(
+        [
+            {
+                "车辆": state.vehicle_id,
+                "阶段": state.phase,
+                "位置": state.node_id,
+                "货物": state.cargo_name or "—",
+                "载货": "是" if state.carrying_cargo else "否",
+                "订单": state.order_id,
+            }
+            for state in active_states
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    caption_slot.caption(
+        f"时间片 {frame.index + 1}/{len(simulation.frames)} ｜ "
+        "实线为已行驶路线，虚线为剩余路线，黄色“货”标记表示车辆已装货。"
+    )
+    progress_slot.progress((frame.index + 1) / len(simulation.frames))
 
 
 def render_runtime(frames: list[dict[str, Any]], *, autoplay: bool) -> None:

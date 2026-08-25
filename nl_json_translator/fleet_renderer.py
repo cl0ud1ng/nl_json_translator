@@ -4,6 +4,7 @@ import html
 from typing import Optional
 
 from nl_json_translator.repositories.maps import MapData
+from nl_json_translator.services.fleet_simulation_service import FleetRuntimeFrame
 from nl_json_translator.services.fleet_view_service import FleetSnapshot, FleetVehicleView
 
 
@@ -27,6 +28,7 @@ def render_fleet_svg(
     snapshot: FleetSnapshot,
     *,
     selected_vehicle_id: Optional[str] = None,
+    runtime_frame: Optional[FleetRuntimeFrame] = None,
 ) -> str:
     width = map_data.width * CELL_SIZE
     height = map_data.height * CELL_SIZE
@@ -37,9 +39,9 @@ def render_fleet_svg(
     ]
     _draw_grid(parts, map_data, width, height)
     _draw_obstacles(parts, map_data)
-    _draw_routes(parts, map_data, snapshot, selected_vehicle_id)
+    _draw_routes(parts, map_data, snapshot, selected_vehicle_id, runtime_frame)
     _draw_locations(parts, map_data)
-    _draw_vehicles(parts, map_data, snapshot, selected_vehicle_id)
+    _draw_vehicles(parts, map_data, snapshot, selected_vehicle_id, runtime_frame)
     parts.append("</svg>")
     return "".join(parts)
 
@@ -72,23 +74,82 @@ def _draw_routes(
     map_data: MapData,
     snapshot: FleetSnapshot,
     selected_vehicle_id: Optional[str],
+    runtime_frame: Optional[FleetRuntimeFrame],
 ) -> None:
+    runtime_by_vehicle = (
+        {state.vehicle_id: state for state in runtime_frame.vehicles}
+        if runtime_frame
+        else {}
+    )
     ordered = sorted(
         snapshot.vehicles,
         key=lambda vehicle: vehicle.id == selected_vehicle_id,
     )
     for vehicle in ordered:
-        points = _route_points(map_data, vehicle.planned_node_ids)
-        if len(points) < 2:
-            continue
         selected = vehicle.id == selected_vehicle_id
-        coordinates = " ".join(f"{x},{y}" for x, y in points)
-        parts.append(
-            f'<polyline data-vehicle-id="{html.escape(vehicle.id)}" points="{coordinates}" '
-            f'fill="none" stroke="{vehicle.color}" stroke-width="{7 if selected else 4}" '
-            f'stroke-dasharray="10 7" stroke-linecap="round" stroke-linejoin="round" '
-            f'opacity="{0.95 if selected or not selected_vehicle_id else 0.28}"/>'
+        opacity = 0.95 if selected or not selected_vehicle_id else 0.22
+        runtime = runtime_by_vehicle.get(vehicle.id)
+        if runtime:
+            _draw_route_line(
+                parts,
+                map_data,
+                vehicle,
+                runtime.executed_node_ids,
+                kind="executed",
+                width=7 if selected else 5,
+                opacity=opacity,
+                dashed=False,
+            )
+            remaining = (
+                (runtime.node_id,) + runtime.remaining_node_ids
+                if runtime.remaining_node_ids
+                else ()
+            )
+            _draw_route_line(
+                parts,
+                map_data,
+                vehicle,
+                remaining,
+                kind="remaining",
+                width=6 if selected else 4,
+                opacity=opacity * 0.72,
+                dashed=True,
+            )
+            continue
+        _draw_route_line(
+            parts,
+            map_data,
+            vehicle,
+            vehicle.planned_node_ids,
+            kind="planned",
+            width=7 if selected else 4,
+            opacity=opacity,
+            dashed=True,
         )
+
+
+def _draw_route_line(
+    parts: list[str],
+    map_data: MapData,
+    vehicle: FleetVehicleView,
+    node_ids: tuple[str, ...],
+    *,
+    kind: str,
+    width: int,
+    opacity: float,
+    dashed: bool,
+) -> None:
+    points = _route_points(map_data, node_ids)
+    if len(points) < 2:
+        return
+    coordinates = " ".join(f"{x},{y}" for x, y in points)
+    dash_attribute = ' stroke-dasharray="10 7"' if dashed else ""
+    parts.append(
+        f'<polyline data-vehicle-id="{html.escape(vehicle.id)}" '
+        f'data-route-kind="{kind}" points="{coordinates}" fill="none" '
+        f'stroke="{vehicle.color}" stroke-width="{width}"{dash_attribute} '
+        f'stroke-linecap="round" stroke-linejoin="round" opacity="{opacity}"/>'
+    )
 
 
 def _draw_locations(parts: list[str], map_data: MapData) -> None:
@@ -110,14 +171,24 @@ def _draw_vehicles(
     map_data: MapData,
     snapshot: FleetSnapshot,
     selected_vehicle_id: Optional[str],
+    runtime_frame: Optional[FleetRuntimeFrame],
 ) -> None:
+    runtime_by_vehicle = (
+        {state.vehicle_id: state for state in runtime_frame.vehicles}
+        if runtime_frame
+        else {}
+    )
     for vehicle in snapshot.vehicles:
-        node = map_data.nodes.get(vehicle.node_id)
+        runtime = runtime_by_vehicle.get(vehicle.id)
+        node_id = runtime.node_id if runtime else vehicle.node_id
+        heading = runtime.heading if runtime else vehicle.heading
+        status = runtime.status if runtime else vehicle.status
+        node = map_data.nodes.get(node_id)
         if not node:
             continue
         center_x, center_y = _node_center(node.x, node.y)
         selected = vehicle.id == selected_vehicle_id
-        outline = STATUS_COLORS.get(vehicle.status.value, "#475569")
+        outline = STATUS_COLORS.get(status.value, "#475569")
         if selected:
             parts.append(
                 f'<circle cx="{center_x}" cy="{center_y}" r="18" fill="none" '
@@ -125,11 +196,15 @@ def _draw_vehicles(
             )
         parts.append(
             f'<g data-vehicle-id="{html.escape(vehicle.id)}" '
-            f'transform="translate({center_x} {center_y}) rotate({vehicle.heading})">'
+            f'transform="translate({center_x} {center_y}) rotate({heading})">'
             f'<path d="M14 0 L-10 -9 L-6 0 L-10 9 Z" fill="{vehicle.color}" '
             f'stroke="{outline}" stroke-width="3"/></g>'
         )
-        label = f"{vehicle.name} · {vehicle.status.value}"
+        label = (
+            f"{vehicle.name} · {runtime.phase}"
+            if runtime
+            else f"{vehicle.name} · {status.value}"
+        )
         label_width = min(176, max(92, len(label) * 6 + 16))
         label_x = max(
             2,
@@ -147,6 +222,15 @@ def _draw_vehicles(
             f'<text x="{label_x + label_width / 2}" y="{label_y + 12.5}" fill="#fff" '
             f'font-size="9" font-weight="600" text-anchor="middle">{html.escape(label)}</text>'
         )
+        if runtime and runtime.carrying_cargo:
+            parts.append(
+                f'<rect x="{center_x + 7}" y="{center_y + 6}" width="20" height="15" '
+                'rx="4" fill="#facc15" stroke="#854d0e" stroke-width="1.5"/>'
+            )
+            parts.append(
+                f'<text x="{center_x + 17}" y="{center_y + 17}" fill="#422006" '
+                'font-size="9" font-weight="800" text-anchor="middle">货</text>'
+            )
 
 
 def _route_points(map_data: MapData, node_ids: tuple[str, ...]) -> list[tuple[float, float]]:

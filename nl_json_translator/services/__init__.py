@@ -8,6 +8,12 @@ from .dispatch_service import (
     DispatchService,
 )
 from .fleet_view_service import FleetSnapshot, FleetVehicleView, FleetViewService
+from .fleet_simulation_service import (
+    FleetRuntimeFrame,
+    FleetSimulation,
+    FleetSimulationService,
+    VehicleRuntimeState,
+)
 from .location_resolver import (
     AmbiguousLocationError,
     LocationResolution,
@@ -26,6 +32,9 @@ __all__ = [
     "DispatchResult",
     "DispatchService",
     "FleetSnapshot",
+    "FleetRuntimeFrame",
+    "FleetSimulation",
+    "FleetSimulationService",
     "FleetVehicleView",
     "FleetViewService",
     "LocationResolution",
@@ -35,5 +44,6 @@ __all__ = [
     "OrderService",
     "RoutePlan",
     "RoutingService",
+    "VehicleRuntimeState",
     "UnknownLocationError",
 ]

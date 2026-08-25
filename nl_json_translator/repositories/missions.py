@@ -112,6 +112,26 @@ class MissionRepository:
         )
         return [_to_data(record) for record in self.session.scalars(statement)]
 
+    def complete(self, mission_id: str, *, completed_at: datetime) -> Optional[MissionData]:
+        statement = (
+            select(MissionRecord)
+            .options(selectinload(MissionRecord.steps))
+            .where(MissionRecord.id == mission_id, MissionRecord.active.is_(True))
+        )
+        record = self.session.scalar(statement)
+        if not record:
+            return None
+        record.status = MissionStatus.COMPLETED.value
+        record.active = False
+        record.started_at = record.started_at or completed_at
+        record.completed_at = completed_at
+        for step in record.steps:
+            step.status = MissionStepStatus.COMPLETED.value
+            step.started_at = step.started_at or completed_at
+            step.completed_at = completed_at
+        self.session.flush()
+        return _to_data(record)
+
 
 def _to_data(record: MissionRecord) -> MissionData:
     return MissionData(

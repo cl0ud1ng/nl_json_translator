@@ -585,7 +585,8 @@ POST   /missions/{id}/replan
 - 阶段 0 和阶段 1 的核心数据链路已经完成；地点管理页面或基础 API 仍未实现。
 - 阶段 2 已完成订单创建、Mission、MissionStep 和 AgentEvent 持久化，订单可展开为标准任务步骤。
 - 阶段 3 已进入开发：当前已有三辆差异化 Demo 车辆、确定性 DispatchService、活动 Mission 唯一约束、批量分配和多车 SVG 调度总览。
-- 阶段 3 尚未完成多个 VehicleAgent 对 MissionStep 的并发推进，车辆位置和执行状态目前不会随多车总览自动变化。
+- 阶段 3 已支持进程内同步播放多个 Mission：车辆会依次前往取货点、装货、载货运输、卸货，并在动画结束后提交最终状态。
+- 阶段 3 尚未实现各 VehicleAgent 独立异步推进和逐时间片状态落库；当前由统一仿真运行时生成同步帧。
 - 阶段 4 的离散时间片、RouteReservation、Cooperative A*、WAIT 和冲突重规划尚未实现。
 - 阶段 5 尚未开始。
 

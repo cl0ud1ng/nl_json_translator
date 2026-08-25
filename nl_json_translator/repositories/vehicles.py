@@ -48,6 +48,26 @@ class VehicleRepository:
         )
         return result.rowcount == 1
 
+    def finish_mission(
+        self,
+        vehicle_id: str,
+        *,
+        node_id: str,
+        heading: float,
+        telemetry_updated_at: datetime,
+    ) -> bool:
+        result = self.session.execute(
+            update(VehicleRecord)
+            .where(VehicleRecord.id == vehicle_id)
+            .values(
+                current_node_id=node_id,
+                heading=heading,
+                status=VehicleStatus.IDLE.value,
+                telemetry_updated_at=telemetry_updated_at,
+            )
+        )
+        return result.rowcount == 1
+
 
 def _to_data(record: VehicleRecord) -> VehicleData:
     return VehicleData(

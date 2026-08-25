@@ -36,6 +36,9 @@ class FleetVehicleView:
     mission_id: Optional[str]
     mission_status: Optional[MissionStatus]
     order_id: Optional[str]
+    cargo_name: Optional[str]
+    pickup_location_id: Optional[str]
+    dropoff_location_id: Optional[str]
     planned_node_ids: tuple[str, ...]
 
 
@@ -64,6 +67,7 @@ class FleetViewService:
         vehicles = []
         for index, vehicle in enumerate(self.vehicles.list_all()):
             mission = mission_by_vehicle.get(vehicle.id)
+            order = self.orders.get(mission.order_id) if mission else None
             vehicles.append(
                 FleetVehicleView(
                     id=vehicle.id,
@@ -76,6 +80,9 @@ class FleetViewService:
                     mission_id=mission.id if mission else None,
                     mission_status=mission.status if mission else None,
                     order_id=mission.order_id if mission else None,
+                    cargo_name=(str(order.cargo.get("name")) if order else None),
+                    pickup_location_id=order.pickup_location_id if order else None,
+                    dropoff_location_id=order.dropoff_location_id if order else None,
                     planned_node_ids=_planned_nodes(mission) if mission else (),
                 )
             )

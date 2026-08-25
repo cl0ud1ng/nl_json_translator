@@ -87,6 +87,17 @@ class OrderRepository:
             for status, count in self.session.execute(statement)
         }
 
+    def mark_delivered(self, order_id: str) -> bool:
+        result = self.session.execute(
+            update(TransportOrderRecord)
+            .where(
+                TransportOrderRecord.id == order_id,
+                TransportOrderRecord.status == OrderStatus.ASSIGNED.value,
+            )
+            .values(status=OrderStatus.DELIVERED.value)
+        )
+        return result.rowcount == 1
+
 
 def _to_data(record: TransportOrderRecord) -> OrderData:
     return OrderData(
