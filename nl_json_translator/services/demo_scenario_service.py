@@ -79,7 +79,6 @@ class DemoScenarioService:
         ):
             order = order_service.create_from_intent(
                 {
-                    "intent": "create_transport_order",
                     "cargo": {
                         "name": cargo_name,
                         "quantity": 1,

@@ -20,10 +20,9 @@ class Cargo(DomainSchema):
     required_capabilities: list[str] = Field(default_factory=list)
 
 
-class TransportIntentDraft(DomainSchema):
-    """LLM-produced draft that deliberately retains user-facing location text."""
+class TransportOrderDraft(DomainSchema):
+    """One LLM-produced order that deliberately retains user-facing text."""
 
-    intent: Literal["create_transport_order"]
     cargo: Cargo
     pickup_location_text: str = Field(min_length=1, max_length=200)
     dropoff_location_text: str = Field(min_length=1, max_length=200)
@@ -31,10 +30,24 @@ class TransportIntentDraft(DomainSchema):
     priority: OrderPriority = OrderPriority.NORMAL
 
     @model_validator(mode="after")
-    def locations_must_differ(self) -> "TransportIntentDraft":
+    def locations_must_differ(self) -> "TransportOrderDraft":
         if self.pickup_location_text.casefold() == self.dropoff_location_text.casefold():
             raise ValueError("pickup and dropoff locations must differ")
         return self
+
+
+class DispatchConstraints(DomainSchema):
+    """Cross-order requirements that the deterministic dispatcher must enforce."""
+
+    distinct_vehicle_per_order: bool = False
+
+
+class TransportRequestDraft(DomainSchema):
+    """The only public natural-language protocol: one request containing N orders."""
+
+    intent: Literal["create_transport_orders"]
+    orders: list[TransportOrderDraft] = Field(min_length=1, max_length=100)
+    dispatch_constraints: DispatchConstraints = Field(default_factory=DispatchConstraints)
 
 
 class TransportOrder(DomainSchema):

@@ -15,7 +15,7 @@ class DeepSeekConfig:
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     temperature: float = 0.0
-    max_tokens: int = 800
+    max_tokens: int = 2400
 
 
 def load_env_file(path: str | Path) -> None:
@@ -46,7 +46,7 @@ def config_from_env(
         raise RuntimeError("DEEPSEEK_API_KEY is not set. Create .env from .env.example or export it.")
 
     env_temperature = os.getenv("DEEPSEEK_TEMPERATURE", "0").strip()
-    env_max_tokens = os.getenv("DEEPSEEK_MAX_TOKENS", "800").strip()
+    env_max_tokens = os.getenv("DEEPSEEK_MAX_TOKENS", "2400").strip()
 
     return DeepSeekConfig(
         api_key=api_key,
@@ -55,4 +55,3 @@ def config_from_env(
         temperature=temperature if temperature is not None else float(env_temperature),
         max_tokens=max_tokens if max_tokens is not None else int(env_max_tokens),
     )
-

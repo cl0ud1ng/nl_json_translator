@@ -8,11 +8,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from .domain.schemas import Cargo, TransportIntentDraft, TransportOrder
+from .domain.schemas import (
+    Cargo,
+    DispatchConstraints,
+    TransportOrder,
+    TransportOrderDraft,
+    TransportRequestDraft,
+)
 
 
-def validate_transport_intent(value: Any) -> dict[str, Any]:
-    return TransportIntentDraft.model_validate(value).model_dump(mode="json")
+def validate_transport_request(value: Any) -> dict[str, Any]:
+    return TransportRequestDraft.model_validate(value).model_dump(mode="json")
 
 
 def validate_transport_order(value: Any) -> dict[str, Any]:
@@ -21,8 +27,10 @@ def validate_transport_order(value: Any) -> dict[str, Any]:
 
 __all__ = [
     "Cargo",
-    "TransportIntentDraft",
+    "DispatchConstraints",
+    "TransportOrderDraft",
+    "TransportRequestDraft",
     "TransportOrder",
-    "validate_transport_intent",
+    "validate_transport_request",
     "validate_transport_order",
 ]

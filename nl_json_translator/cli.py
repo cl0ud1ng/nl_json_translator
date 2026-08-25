@@ -55,7 +55,7 @@ def _translate_once(translator: Translator, text: str, *, raw: bool) -> int:
     result = translator.translate(text)
     if raw:
         print(result.raw_response, file=sys.stderr)
-    print(json.dumps(result.intent, ensure_ascii=False, indent=2))
+    print(json.dumps(result.request, ensure_ascii=False, indent=2))
     return 0
 
 

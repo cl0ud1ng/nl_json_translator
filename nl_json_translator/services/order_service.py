@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from nl_json_translator.domain.enums import OrderStatus
-from nl_json_translator.domain.schemas import TransportIntentDraft, TransportOrder
+from nl_json_translator.domain.schemas import TransportOrder, TransportOrderDraft
 from nl_json_translator.infrastructure.orm_models import TransportOrderRecord, VehicleRecord
 from nl_json_translator.repositories.locations import LocationRepository
 
@@ -38,15 +38,15 @@ class OrderService:
 
     def create_from_intent(
         self,
-        intent: TransportIntentDraft | dict[str, Any],
+        intent: TransportOrderDraft | dict[str, Any],
         *,
         idempotency_key: Optional[str] = None,
         batch_id: Optional[str] = None,
     ) -> OrderCreationResult:
         draft = (
             intent
-            if isinstance(intent, TransportIntentDraft)
-            else TransportIntentDraft.model_validate(intent)
+            if isinstance(intent, TransportOrderDraft)
+            else TransportOrderDraft.model_validate(intent)
         )
         if idempotency_key:
             existing = self.session.scalar(

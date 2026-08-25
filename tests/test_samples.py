@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from nl_json_translator.schema import validate_transport_intent
+from nl_json_translator.schema import validate_transport_request
 
 
 class SampleFixtureTests(unittest.TestCase):
@@ -11,8 +11,8 @@ class SampleFixtureTests(unittest.TestCase):
         for line_number, line in enumerate(fixture.read_text(encoding="utf-8").splitlines(), start=1):
             with self.subTest(line=line_number):
                 row = json.loads(line)
-                intent = validate_transport_intent(row["expected"])
-                self.assertEqual(intent["intent"], "create_transport_order")
+                request = validate_transport_request(row["expected"])
+                self.assertEqual(request["intent"], "create_transport_orders")
 
 
 if __name__ == "__main__":

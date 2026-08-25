@@ -10,7 +10,13 @@ from .enums import (
     OrderStatus,
     VehicleStatus,
 )
-from .schemas import Cargo, TransportIntentDraft, TransportOrder
+from .schemas import (
+    Cargo,
+    DispatchConstraints,
+    TransportOrder,
+    TransportOrderDraft,
+    TransportRequestDraft,
+)
 
 __all__ = [
     "AgentEventType",
@@ -21,7 +27,9 @@ __all__ = [
     "MissionStepType",
     "OrderPriority",
     "OrderStatus",
-    "TransportIntentDraft",
+    "DispatchConstraints",
+    "TransportOrderDraft",
+    "TransportRequestDraft",
     "TransportOrder",
     "VehicleStatus",
 ]

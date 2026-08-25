@@ -5,17 +5,21 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .domain.schemas import TransportIntentDraft
-from .deepseek_client import ChatClient
+from .domain.schemas import TransportRequestDraft
+from .deepseek_client import ChatClient, ChatCompletion
 from .json_utils import parse_json_object
 from .prompts import build_messages
 
 
 @dataclass(frozen=True)
 class Translation:
-    intent: dict[str, Any]
+    request: dict[str, Any]
     raw_response: str
     attempts: int
+    response_id: str | None = None
+    model: str | None = None
+    finish_reason: str | None = None
+    usage: dict[str, Any] | None = None
 
 
 class Translator:
@@ -30,14 +34,24 @@ class Translator:
 
         validation_error: str | None = None
         last_raw = ""
+        completion = ChatCompletion("")
 
         for attempt in range(self.retries + 1):
             messages = build_messages(command_text, validation_error)
-            last_raw = self.client.complete(messages)
+            completion = self.client.complete(messages)
+            last_raw = completion.content
             try:
                 parsed = parse_json_object(last_raw)
-                intent = TransportIntentDraft.model_validate(parsed).model_dump(mode="json")
-                return Translation(intent=intent, raw_response=last_raw, attempts=attempt + 1)
+                request = TransportRequestDraft.model_validate(parsed).model_dump(mode="json")
+                return Translation(
+                    request=request,
+                    raw_response=last_raw,
+                    attempts=attempt + 1,
+                    response_id=completion.response_id,
+                    model=completion.model,
+                    finish_reason=completion.finish_reason,
+                    usage=completion.usage,
+                )
             except (ValueError, ValidationError) as exc:
                 validation_error = str(exc)
 

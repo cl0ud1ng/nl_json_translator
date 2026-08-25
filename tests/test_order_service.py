@@ -28,7 +28,6 @@ class OrderServiceTests(unittest.TestCase):
     @staticmethod
     def _intent(pickup="A", dropoff="B"):
         return {
-            "intent": "create_transport_order",
             "cargo": {"name": "零件箱", "quantity": 3, "weight_kg": 15},
             "pickup_location_text": pickup,
             "dropoff_location_text": dropoff,

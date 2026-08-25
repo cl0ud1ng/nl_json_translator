@@ -3,13 +3,23 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .config import DeepSeekConfig
 
 
+@dataclass(frozen=True)
+class ChatCompletion:
+    content: str
+    response_id: str | None = None
+    model: str | None = None
+    finish_reason: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
+
+
 class ChatClient(Protocol):
-    def complete(self, messages: list[dict[str, str]]) -> str:
+    def complete(self, messages: list[dict[str, str]]) -> ChatCompletion:
         ...
 
 
@@ -17,7 +27,7 @@ class DeepSeekClient:
     def __init__(self, config: DeepSeekConfig):
         self.config = config
 
-    def complete(self, messages: list[dict[str, str]]) -> str:
+    def complete(self, messages: list[dict[str, str]]) -> ChatCompletion:
         url = self.config.base_url.rstrip("/") + "/chat/completions"
         payload: dict[str, Any] = {
             "model": self.config.model,
@@ -25,6 +35,7 @@ class DeepSeekClient:
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
             "response_format": {"type": "json_object"},
+            "thinking": {"type": "disabled"},
         }
         body = json.dumps(payload).encode("utf-8")
 
@@ -50,7 +61,13 @@ class DeepSeekClient:
 
         data = json.loads(raw)
         try:
-            return data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            return ChatCompletion(
+                content=choice["message"]["content"],
+                response_id=data.get("id"),
+                model=data.get("model"),
+                finish_reason=choice.get("finish_reason"),
+                usage=dict(data.get("usage") or {}),
+            )
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"Unexpected DeepSeek API response: {raw}") from exc
-

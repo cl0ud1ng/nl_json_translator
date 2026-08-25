@@ -1,2 +1,2 @@
-{"input":"从 A 取 3 箱零件送到 B","expected":{"intent":"create_transport_order","cargo":{"name":"零件箱","quantity":3},"pickup_location_text":"A","dropoff_location_text":"B"}}
-{"input":"Urgently move a package from lab to charging station","expected":{"intent":"create_transport_order","cargo":{"name":"package","quantity":1},"pickup_location_text":"lab","dropoff_location_text":"charging station","priority":"urgent"}}
+{"input":"从 A 取 3 箱零件送到 B","expected":{"intent":"create_transport_orders","orders":[{"cargo":{"name":"零件箱","quantity":3},"pickup_location_text":"A","dropoff_location_text":"B"}]}}
+{"input":"Urgently move a package from lab to charging station","expected":{"intent":"create_transport_orders","orders":[{"cargo":{"name":"package","quantity":1},"pickup_location_text":"lab","dropoff_location_text":"charging station","priority":"urgent"}]}}
