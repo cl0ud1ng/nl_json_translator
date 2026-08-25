@@ -121,20 +121,9 @@ def main() -> None:
         )
         st.session_state.request_text = request_text
 
-    col_run, col_dispatch, col_replay, col_reset = st.columns(4)
+    col_run, col_dispatch, col_reset = st.columns(3)
     run_clicked = col_run.button("创建订单并播放", type="primary", width="stretch")
     dispatch_clicked = col_dispatch.button("调度并播放全部任务", width="stretch")
-    replay_clicked = col_replay.button(
-        "重播轨迹",
-        width="stretch",
-        disabled=not bool(
-            st.session_state.last_result
-            and (
-                st.session_state.last_result.get("fleet_simulation")
-                or st.session_state.last_result.get("frames")
-            )
-        ),
-    )
     reset_clicked = col_reset.button("重置演示数据", width="stretch")
 
     if run_clicked:
@@ -159,10 +148,6 @@ def main() -> None:
     if dispatch_clicked:
         st.session_state.last_result = run_fleet_dispatch(database_url)
         st.session_state.last_frame_index = 0
-        st.session_state.autoplay = True
-    if replay_clicked:
-        st.session_state.last_frame_index = 0
-        st.session_state.pop("fleet_runtime_slider", None)
         st.session_state.autoplay = True
     if reset_clicked:
         st.session_state.dispatch_notice = reset_demo_runtime(database_url)
@@ -718,7 +703,21 @@ def render_fleet_runtime(
     database_url: str,
     autoplay: bool,
 ) -> bool:
-    st.subheader("动态多车取货与送货过程")
+    heading_column, replay_column = st.columns([5, 1])
+    with heading_column:
+        st.subheader("动态多车取货与送货过程")
+    with replay_column:
+        replay_clicked = st.button(
+            "重播轨迹",
+            width="stretch",
+            key="runtime_replay_button",
+        )
+    if replay_clicked:
+        st.session_state.last_frame_index = 0
+        st.session_state.pop("fleet_runtime_slider", None)
+        st.session_state.autoplay = True
+        st.rerun()
+
     database = Database(database_url)
     try:
         with database.session() as session:
