@@ -4,24 +4,23 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-from uuid import uuid4
 
 import streamlit as st
 from sqlalchemy import update
 
+from nl_json_translator.agents import AgentRuntime, DispatcherAgent
 from nl_json_translator.config import config_from_env, load_env_file
 from nl_json_translator.deepseek_client import DeepSeekClient
 from nl_json_translator.domain.enums import OrderStatus
-from nl_json_translator.domain.schemas import TransportIntentDraft
+from nl_json_translator.domain.schemas import TransportRequestDraft
 from nl_json_translator.fleet_renderer import render_fleet_svg
 from nl_json_translator.infrastructure.database import Database, default_database_url
 from nl_json_translator.infrastructure.demo_map import DEMO_VEHICLES
-from nl_json_translator.infrastructure.orm_models import VehicleRecord
+from nl_json_translator.infrastructure.orm_models import TransportOrderRecord, VehicleRecord
 from nl_json_translator.infrastructure.seed_demo_data import seed_demo_data
-from nl_json_translator.map_executor import execute_command, pretty_json
+from nl_json_translator.map_executor import pretty_json
 from nl_json_translator.prompts import build_messages
 from nl_json_translator.repositories.maps import MapRepository
-from nl_json_translator.repositories.vehicles import VehicleRepository
 from nl_json_translator.services.demo_scenario_service import DemoScenarioService
 from nl_json_translator.services.dispatch_service import DispatchResult, DispatchService
 from nl_json_translator.services.fleet_simulation_service import (
@@ -31,12 +30,16 @@ from nl_json_translator.services.fleet_simulation_service import (
 )
 from nl_json_translator.services.fleet_view_service import FleetViewService
 from nl_json_translator.services.location_resolver import LocationResolution
-from nl_json_translator.services.order_service import OrderService
 from nl_json_translator.translator import Translator
 
 
 ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_REQUEST = "从 A 取 3 箱零件送到 B"
+DEFAULT_REQUEST = (
+    "创建三张独立运输订单并并发调度：1）从 A 取 1 箱零件箱 A（25kg）送到 B；"
+    "2）从 C 取 1 箱零件箱 B（30kg）送到 lab；3）从 A 取 1 箱零件箱 C（35kg）"
+    "送到 lab。必须分配给 3 辆不同的车，每辆车只执行一张订单；整体恰好包含 2 个"
+    "不同取货点和 2 个不同目标点。"
+)
 FRAME_DELAY_SECONDS = 0.12
 
 
@@ -46,109 +49,40 @@ def main() -> None:
     _init_state()
     database_url = default_database_url()
     seed_demo_data(database_url)
-    location_names = _location_names(database_url)
-
-    st.title("场内多车货物运输调度 Demo")
+    st.title("自然语言多车 Agent 调度 Demo")
     with st.sidebar:
         model = st.selectbox("模型", ["deepseek-v4-pro", "deepseek-v4-flash"], index=0)
-        start_point = st.selectbox("未分配时的路径预览起点", location_names, index=0)
         show_prompt = st.toggle("显示 Prompt", value=False)
         st.divider()
-        st.caption("三车 → 两个取货点 → 两个目标点 → 协同路径 → 动态执行")
+        st.caption("DeepSeek 批量意图 → DispatcherAgent → N 个 VehicleAgent")
         if st.button("清空结果", width="stretch"):
             st.session_state.last_result = None
             st.session_state.last_frame_index = 0
             st.rerun()
 
-    demo_mode = st.radio(
-        "演示模式",
-        ["三车双取送场景", "自然语言单订单"],
-        horizontal=True,
+    request_text = st.text_area(
+        "自然语言运输请求（支持 1 到 N 张订单）",
+        value=st.session_state.get("request_text", DEFAULT_REQUEST),
+        height=150,
     )
-    request_text = st.session_state.get("request_text", DEFAULT_REQUEST)
-    pickup_locations = ("A", "C")
-    dropoff_locations = ("B", "lab")
-    cargo_names = ("零件箱 A", "零件箱 B", "零件箱 C")
-    reset_before_run = False
-    if demo_mode == "三车双取送场景":
-        st.info(
-            "一次创建 3 张独立订单并分配给 3 辆车；地点集合严格包含 2 个取货点和 "
-            "2 个目标点，每辆车只执行一个取货—送货对。"
-        )
-        pickup_col, dropoff_col = st.columns(2)
-        with pickup_col:
-            st.markdown("**两个取货地点**")
-            pickup_one = st.selectbox(
-                "取货地点 1",
-                location_names,
-                index=_location_index(location_names, "A"),
-            )
-            pickup_two = st.selectbox(
-                "取货地点 2",
-                location_names,
-                index=_location_index(location_names, "C"),
-            )
-            pickup_locations = (pickup_one, pickup_two)
-        with dropoff_col:
-            st.markdown("**两个目标地点**")
-            dropoff_one = st.selectbox(
-                "目标地点 1",
-                location_names,
-                index=_location_index(location_names, "B"),
-            )
-            dropoff_two = st.selectbox(
-                "目标地点 2",
-                location_names,
-                index=_location_index(location_names, "lab"),
-            )
-            dropoff_locations = (dropoff_one, dropoff_two)
-        cargo_columns = st.columns(3)
-        cargo_names = tuple(
-            column.text_input(f"车辆任务 {index + 1} 货物", value=default)
-            for index, (column, default) in enumerate(
-                zip(cargo_columns, ("零件箱 A", "零件箱 B", "零件箱 C"))
-            )
-        )
-        reset_before_run = st.checkbox(
-            "创建前重置演示订单、Mission 和三辆车初始位置",
-            value=True,
-        )
-    else:
-        request_text = st.text_area(
-            "自然语言运输请求",
-            value=request_text,
-            height=90,
-        )
-        st.session_state.request_text = request_text
-
-    col_run, col_dispatch, col_reset = st.columns(3)
-    run_clicked = col_run.button("创建订单并播放", type="primary", width="stretch")
-    dispatch_clicked = col_dispatch.button("调度并播放全部任务", width="stretch")
-    reset_clicked = col_reset.button("重置演示数据", width="stretch")
+    st.session_state.request_text = request_text
+    reset_before_run = st.checkbox(
+        "运行前清理旧任务并恢复 Demo 车辆初始状态", value=True
+    )
+    col_run, col_reset = st.columns(2)
+    run_clicked = col_run.button("调用 DeepSeek 并运行 Agent 链路", type="primary", width="stretch")
+    reset_clicked = col_reset.button("重置运行数据", width="stretch")
 
     if run_clicked:
         with st.spinner("Pipeline running..."):
-            if demo_mode == "三车双取送场景":
-                st.session_state.last_result = run_three_vehicle_scenario(
-                    pickup_locations=pickup_locations,
-                    dropoff_locations=dropoff_locations,
-                    cargo_names=cargo_names,
-                    database_url=database_url,
-                    reset_before_run=reset_before_run,
-                )
-            else:
-                st.session_state.last_result = run_pipeline(
-                    request_text=request_text,
-                    model=model,
-                    start_point=start_point,
-                    database_url=database_url,
-                )
+            st.session_state.last_result = run_pipeline(
+                request_text=request_text,
+                model=model,
+                database_url=database_url,
+                reset_before_run=reset_before_run,
+            )
             st.session_state.last_frame_index = 0
             st.session_state.autoplay = True
-    if dispatch_clicked:
-        st.session_state.last_result = run_fleet_dispatch(database_url)
-        st.session_state.last_frame_index = 0
-        st.session_state.autoplay = True
     if reset_clicked:
         st.session_state.dispatch_notice = reset_demo_runtime(database_url)
         st.session_state.last_result = None
@@ -197,12 +131,16 @@ def _location_index(location_names: list[str], preferred: str) -> int:
 
 
 def run_pipeline(
-    *, request_text: str, model: str, start_point: str, database_url: str
+    *,
+    request_text: str,
+    model: str,
+    database_url: str,
+    reset_before_run: bool = False,
+    translator: Optional[Translator] = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "natural_language": request_text,
         "model": model,
-        "start_point": start_point,
         "translation": None,
         "validation": {"ok": False},
         "order": None,
@@ -211,99 +149,105 @@ def run_pipeline(
         "execution": None,
         "frames": [],
         "fleet_simulation": None,
-        "simulation_finalized": False,
+        "simulation_finalized": True,
         "prompt_messages": build_messages(request_text) if request_text.strip() else [],
         "logs": [],
     }
     database: Optional[Database] = None
     try:
-        config = config_from_env(model=model)
-        translated = Translator(DeepSeekClient(config)).translate(request_text)
-        draft = TransportIntentDraft.model_validate(translated.intent)
+        active_translator = translator or Translator(
+            DeepSeekClient(config_from_env(model=model))
+        )
+        translated = active_translator.translate(request_text)
+        draft = TransportRequestDraft.model_validate(translated.request)
         result["translation"] = {
             "source": "deepseek",
             "intent": draft.model_dump(mode="json"),
             "raw_response": translated.raw_response,
             "attempts": translated.attempts,
+            "response_id": translated.response_id,
+            "provider_model": translated.model,
+            "finish_reason": translated.finish_reason,
+            "usage": translated.usage or {},
         }
-        result["validation"] = {"ok": True, "message": "运输意图 Schema 校验通过。"}
-        result["logs"].append(f"Transport intent extracted in {translated.attempts} attempt(s).")
+        result["logs"].append(
+            f"DeepSeek extracted {len(draft.orders)} order(s) in "
+            f"{translated.attempts} attempt(s)."
+        )
 
         database = Database(database_url)
         with database.session() as session:
-            order_result = OrderService(session).create_from_intent(
-                draft, idempotency_key=f"ui-{uuid4().hex}"
+            if reset_before_run:
+                reset = DemoScenarioService(session).reset_demo_runtime()
+                result["logs"].append(f"Reset runtime before request: {reset}.")
+            _refresh_demo_telemetry(session)
+            submission = DispatcherAgent(session).submit(
+                draft,
+                natural_language=request_text,
+                provider_response_id=translated.response_id,
+                provider_model=translated.model,
+                provider_usage=translated.usage,
             )
             result["order"] = {
-                "id": order_result.order_id,
-                "status": order_result.status.value,
-                "formal_order": (
-                    order_result.formal_order.model_dump(mode="json")
-                    if order_result.formal_order
-                    else None
-                ),
-                "pickup_resolution": _resolution_dict(order_result.pickup_resolution),
-                "dropoff_resolution": _resolution_dict(order_result.dropoff_resolution),
-            }
-            result["logs"].append(
-                f"Order {order_result.order_id} persisted as {order_result.status.value}."
-            )
-            if not order_result.formal_order:
-                result["logs"].append("Location confirmation is required before execution.")
-                return result
-
-            formal_order = order_result.formal_order
-            _refresh_demo_telemetry(session)
-            dispatch_result = DispatchService(session).dispatch_order(order_result.order_id)
-            result["dispatch"] = _dispatch_dict(dispatch_result)
-            if not dispatch_result.assigned:
-                result["logs"].append(
-                    "No eligible idle vehicle is currently available; order remains RESOLVED."
-                )
-                _attach_active_fleet_simulation(result, session)
-                return result
-            result["order"]["status"] = "ASSIGNED"
-            result["logs"].append(
-                f"Mission {dispatch_result.mission.id} assigned to "
-                f"{dispatch_result.selected_vehicle_id} at cost {dispatch_result.selected_cost}."
-            )
-            internal_command = {
-                "action": "sequence",
-                "params": [
+                "batch_id": submission.batch_id,
+                "status": "DISPATCHED" if submission.dispatches else "NEEDS_REVIEW",
+                "orders": [
                     {
-                        "action": "go_to_goal",
-                        "params": {
-                            "location": {
-                                "type": "str",
-                                "value": formal_order.pickup_location_id,
-                            }
-                        },
-                    },
-                    {
-                        "action": "go_to_goal",
-                        "params": {
-                            "location": {
-                                "type": "str",
-                                "value": formal_order.dropoff_location_id,
-                            }
-                        },
-                    },
+                        "id": order.order_id,
+                        "status": order.status.value,
+                        "formal_order": (
+                            order.formal_order.model_dump(mode="json")
+                            if order.formal_order
+                            else None
+                        ),
+                        "pickup_resolution": _resolution_dict(order.pickup_resolution),
+                        "dropoff_resolution": _resolution_dict(order.dropoff_resolution),
+                    }
+                    for order in submission.orders
                 ],
             }
-            repository = MapRepository(session)
-            selected_vehicle = VehicleRepository(session).get(
-                dispatch_result.selected_vehicle_id
+            if not submission.dispatches:
+                result["validation"] = {
+                    "ok": False,
+                    "message": "批量订单包含需要人工确认的地点。",
+                }
+                return result
+            assigned = tuple(item for item in submission.dispatches if item.assigned)
+            result["dispatch"] = {
+                "assigned": bool(assigned),
+                "assigned_count": len(assigned),
+                "waiting_count": len(submission.dispatches) - len(assigned),
+                "results": [_dispatch_dict(item) for item in submission.dispatches],
+            }
+            if not assigned:
+                result["order"]["status"] = "WAITING"
+                result["validation"] = {
+                    "ok": False,
+                    "message": "当前车队无法满足整批订单的硬约束。",
+                }
+                return result
+            simulation = AgentRuntime(session).run_until_idle()
+            result["fleet_simulation"] = simulation
+            for order in result["order"]["orders"]:
+                record = session.get(TransportOrderRecord, order["id"])
+                order["status"] = record.status if record else "UNKNOWN"
+            delivered_count = sum(
+                order["status"] == "DELIVERED" for order in result["order"]["orders"]
             )
-            execution_start = (
-                selected_vehicle.current_node_id if selected_vehicle else start_point
+            result["order"]["status"] = (
+                "DELIVERED"
+                if delivered_count == len(result["order"]["orders"])
+                else "PARTIAL"
             )
-            result["internal_mission_command"] = internal_command
-            result["execution"] = execute_command(
-                internal_command, repository=repository, start=execution_start
-            )
-            _attach_active_fleet_simulation(result, session)
+            result["validation"] = {
+                "ok": True,
+                "message": (
+                    f"DeepSeek 意图已经过 DispatcherAgent 和 "
+                    f"{len(assigned)} 个 VehicleAgent 完整执行。"
+                ),
+            }
             result["logs"].append(
-                f"Fleet simulation starts from persisted vehicle node {execution_start}."
+                f"Batch {submission.batch_id} completed through durable agent commands."
             )
     except Exception as exc:
         result["validation"] = {"ok": False, "message": str(exc)}
