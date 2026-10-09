@@ -36,7 +36,7 @@ class ScenarioStateError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class ThreeVehicleScenarioResult:
+class TwoVehicleScenarioResult:
     batch_id: str
     orders: tuple[OrderCreationResult, ...]
     dispatches: tuple[DispatchResult, ...]
@@ -47,16 +47,16 @@ class DemoScenarioService:
     def __init__(self, session: Session):
         self.session = session
 
-    def create_three_vehicle_scenario(
+    def create_two_vehicle_scenario(
         self,
         *,
         pickup_location_texts: tuple[str, str],
         dropoff_location_texts: tuple[str, str],
-        cargo_names: Sequence[str] = ("零件箱 A", "零件箱 B", "零件箱 C"),
-    ) -> ThreeVehicleScenarioResult:
+        cargo_names: Sequence[str] = ("零件箱 A", "零件箱 B"),
+    ) -> TwoVehicleScenarioResult:
         self._validate_locations(pickup_location_texts, dropoff_location_texts)
-        if len(cargo_names) != 3 or any(not name.strip() for name in cargo_names):
-            raise ValueError("three non-empty cargo names are required")
+        if len(cargo_names) != 2 or any(not name.strip() for name in cargo_names):
+            raise ValueError("two non-empty cargo names are required")
         if MissionRepository(self.session).list_active():
             raise ScenarioStateError("请先完成或重置当前活动 Mission")
         idle_vehicles = [
@@ -64,14 +64,13 @@ class DemoScenarioService:
             for vehicle in VehicleRepository(self.session).list_all()
             if vehicle.status is VehicleStatus.IDLE
         ]
-        if len(idle_vehicles) < 3:
-            raise ScenarioStateError("三车场景需要至少 3 辆空闲车辆")
+        if len(idle_vehicles) < 2:
+            raise ScenarioStateError("双车场景需要至少 2 辆空闲车辆")
 
         batch_id = f"batch_{uuid4().hex}"
         pairs = (
             (pickup_location_texts[0], dropoff_location_texts[0]),
             (pickup_location_texts[1], dropoff_location_texts[1]),
-            (pickup_location_texts[0], dropoff_location_texts[1]),
         )
         order_service = OrderService(self.session)
         dispatch_service = DispatchService(self.session)
@@ -123,9 +122,9 @@ class DemoScenarioService:
             snapshot,
             mission_ids=mission_ids,
         )
-        if len(simulation.mission_ids) != 3:
-            raise ScenarioStateError("三车场景未能创建 3 个独立 Mission")
-        return ThreeVehicleScenarioResult(
+        if len(simulation.mission_ids) != 2:
+            raise ScenarioStateError("双车场景未能创建 2 个独立 Mission")
+        return TwoVehicleScenarioResult(
             batch_id=batch_id,
             orders=tuple(orders),
             dispatches=tuple(dispatches),
@@ -140,6 +139,9 @@ class DemoScenarioService:
         deleted_missions = self.session.execute(delete(MissionRecord)).rowcount
         deleted_orders = self.session.execute(delete(TransportOrderRecord)).rowcount
         deleted_batches = self.session.execute(delete(TransportBatchRecord)).rowcount
+        self.session.execute(
+            delete(VehicleRecord).where(VehicleRecord.id == "vehicle_demo_03")
+        )
         timestamp = datetime.now(timezone.utc)
         reset_vehicles = 0
         for definition in DEMO_VEHICLES:
@@ -182,7 +184,6 @@ class DemoScenarioService:
         pairs = (
             (normalized_pickups[0], normalized_dropoffs[0]),
             (normalized_pickups[1], normalized_dropoffs[1]),
-            (normalized_pickups[0], normalized_dropoffs[1]),
         )
         if any(pickup == dropoff for pickup, dropoff in pairs):
             raise ValueError("每辆车的取货地点和目标地点必须不同")

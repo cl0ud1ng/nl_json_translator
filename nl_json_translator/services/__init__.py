@@ -10,7 +10,7 @@ from .dispatch_service import (
 from .demo_scenario_service import (
     DemoScenarioService,
     ScenarioStateError,
-    ThreeVehicleScenarioResult,
+    TwoVehicleScenarioResult,
 )
 from .cooperative_routing_service import (
     CooperativePlanningError,
@@ -61,7 +61,7 @@ __all__ = [
     "RoutePlan",
     "RoutingService",
     "ScenarioStateError",
-    "ThreeVehicleScenarioResult",
+    "TwoVehicleScenarioResult",
     "TimedRoute",
     "VehicleRuntimeState",
     "find_runtime_conflicts",

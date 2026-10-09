@@ -46,8 +46,9 @@ python -m nl_json_translator.infrastructure.seed_demo_data
 streamlit run app.py
 ```
 
-UI 默认自然语言会产生 3 张订单、3 辆不同车、2 个取货点和 2 个目标点，
-但运行时和 Schema 没有三车数量限制。修改自然语言即可提交单订单或其他批量订单。
+UI 默认自然语言会产生 2 张订单、2 辆不同车、2 个取货点和 2 个目标点，
+默认演示车队为双车；运行时和 Schema 支持任意数量的车辆与订单。修改自然语言即可提交单订单或其他批量订单。
+已有三车演示数据可点击「重置运行数据」切换为双车，旧任务会一并清理。
 多车回放同步展示 DispatcherAgent 与每个 VehicleAgent 的双向信息流：蓝色为 Mission、
 步骤和路由命令，橙色为命令接收、位置、阻塞、心跳和 Mission 完成事件。
 多车调度总览保留最近一次调度的规划路线，并以 `Vn + 起/终` 标记每辆车的
@@ -107,5 +108,5 @@ python -m unittest discover -s tests -v
 RUN_DEEPSEEK_E2E=1 python -m unittest tests.test_deepseek_e2e -v
 ```
 
-在临时 SQLite 中验收：DeepSeek 响应元数据、3 张订单、3 辆不同车、2 个取货点、
-2 个目标点、3 个 Mission、全部 `DELIVERED` 和零运行时冲突。
+在临时 SQLite 中验收：DeepSeek 响应元数据、2 张订单、2 辆不同车、2 个取货点、
+2 个目标点、2 个 Mission、全部 `DELIVERED` 和零运行时冲突。

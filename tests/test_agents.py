@@ -25,6 +25,7 @@ from nl_json_translator.infrastructure.orm_models import (
     TransportBatchRecord,
     TransportOrderRecord,
     VehicleAgentStateRecord,
+    VehicleRecord,
 )
 from nl_json_translator.infrastructure.seed_demo_data import seed_demo_data
 from nl_json_translator.repositories.maps import MapRepository
@@ -63,6 +64,14 @@ class TwoLevelAgentTests(unittest.TestCase):
         self.url = f"sqlite:///{Path(self.temp_dir.name) / 'agents.db'}"
         seed_demo_data(self.url)
         self.database = Database(self.url)
+        # Keep generic three-agent coverage independent of the two-vehicle demo.
+        with self.database.session() as session:
+            session.add(VehicleRecord(
+                id="vehicle_test_03", name="Test Vehicle 03",
+                current_node_id="node_17_11", heading=180.0, status="IDLE",
+                capacity_weight=1000.0, capacity_volume=6.0,
+                battery_level=62.0, capabilities=["standard"],
+            ))
 
     def tearDown(self):
         self.database.dispose()

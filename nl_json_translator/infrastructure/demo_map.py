@@ -84,16 +84,6 @@ DEMO_VEHICLES: tuple[dict[str, Any], ...] = (
         "battery_level": 78.0,
         "capabilities": ("standard", "forklift"),
     },
-    {
-        "id": "vehicle_demo_03",
-        "name": "Demo Vehicle 03",
-        "coordinate": (17, 11),
-        "heading": 180.0,
-        "capacity_weight": 1000.0,
-        "capacity_volume": 6.0,
-        "battery_level": 62.0,
-        "capabilities": ("standard", "heavy_lift", "explosion_proof"),
-    },
 )
 
 

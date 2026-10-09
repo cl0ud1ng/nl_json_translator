@@ -61,7 +61,7 @@ class DeepSeekEndToEndTests(unittest.TestCase):
         self.assertTrue(result["validation"]["ok"], result["validation"])
         self.assertTrue(translation.get("response_id"))
         self.assertEqual(translation.get("provider_model"), "deepseek-v4-pro")
-        self.assertEqual(len(orders), 3)
+        self.assertEqual(len(orders), 2)
         self.assertEqual(order.get("status"), "DELIVERED")
         self.assertEqual(
             len({item["formal_order"]["pickup_location_id"] for item in orders}), 2
@@ -69,9 +69,9 @@ class DeepSeekEndToEndTests(unittest.TestCase):
         self.assertEqual(
             len({item["formal_order"]["dropoff_location_id"] for item in orders}), 2
         )
-        self.assertEqual(dispatch.get("assigned_count"), 3)
-        self.assertEqual(len(vehicle_ids), 3)
-        self.assertEqual(len(simulation.mission_ids), 3)
+        self.assertEqual(dispatch.get("assigned_count"), 2)
+        self.assertEqual(len(vehicle_ids), 2)
+        self.assertEqual(len(simulation.mission_ids), 2)
         self.assertEqual(conflicts, [])
 
 

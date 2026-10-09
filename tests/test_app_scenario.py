@@ -25,11 +25,6 @@ class FakeDeepSeekClient:
                     "pickup_location_text": "C",
                     "dropoff_location_text": "lab",
                 },
-                {
-                    "cargo": {"name": "零件箱 C", "quantity": 1, "weight_kg": 35},
-                    "pickup_location_text": "A",
-                    "dropoff_location_text": "lab",
-                },
             ],
             "dispatch_constraints": {"distinct_vehicle_per_order": True},
         }
@@ -56,17 +51,17 @@ class AppScenarioTests(unittest.TestCase):
 
         self.assertTrue(result["validation"]["ok"])
         self.assertEqual(result["translation"]["response_id"], "chat-integration")
-        self.assertEqual(result["dispatch"]["assigned_count"], 3)
+        self.assertEqual(result["dispatch"]["assigned_count"], 2)
         self.assertEqual(result["order"]["status"], "DELIVERED")
         orders = result["order"]["orders"]
-        self.assertEqual(len(orders), 3)
+        self.assertEqual(len(orders), 2)
         self.assertEqual(
             len({item["formal_order"]["pickup_location_id"] for item in orders}), 2
         )
         self.assertEqual(
             len({item["formal_order"]["dropoff_location_id"] for item in orders}), 2
         )
-        self.assertEqual(len(result["fleet_simulation"].mission_ids), 3)
+        self.assertEqual(len(result["fleet_simulation"].mission_ids), 2)
 
 
 if __name__ == "__main__":

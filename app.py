@@ -39,9 +39,9 @@ from nl_json_translator.translator import Translator
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_REQUEST = (
-    "创建三张独立运输订单并并发调度：1）从 A 取 1 箱零件箱 A（25kg）送到 B；"
-    "2）从 C 取 1 箱零件箱 B（30kg）送到 lab；3）从 A 取 1 箱零件箱 C（35kg）"
-    "送到 lab。必须分配给 3 辆不同的车，每辆车只执行一张订单；整体恰好包含 2 个"
+    "创建两张独立运输订单并并发调度：1）从 A 取 1 箱零件箱 A（25kg）送到 B；"
+    "2）从 C 取 1 箱零件箱 B（30kg）送到 lab。必须分配给 2 辆不同的车，"
+    "每辆车只执行一张订单；整体恰好包含 2 个"
     "不同取货点和 2 个不同目标点。"
 )
 FRAME_DELAY_SECONDS = 0.12
@@ -267,17 +267,17 @@ def run_pipeline(
     return result
 
 
-def run_three_vehicle_scenario(
+def run_two_vehicle_scenario(
     *,
     pickup_locations: tuple[str, str],
     dropoff_locations: tuple[str, str],
-    cargo_names: tuple[str, str, str],
+    cargo_names: tuple[str, str],
     database_url: str,
     reset_before_run: bool = True,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "natural_language": None,
-        "model": "three-vehicle-scenario",
+        "model": "two-vehicle-scenario",
         "translation": None,
         "validation": {"ok": False},
         "order": None,
@@ -300,7 +300,7 @@ def run_three_vehicle_scenario(
                     f"Reset demo runtime before scenario: {reset}."
                 )
             _refresh_demo_telemetry(session)
-            scenario = scenario_service.create_three_vehicle_scenario(
+            scenario = scenario_service.create_two_vehicle_scenario(
                 pickup_location_texts=pickup_locations,
                 dropoff_location_texts=dropoff_locations,
                 cargo_names=cargo_names,
@@ -325,20 +325,20 @@ def run_three_vehicle_scenario(
             }
             result["dispatch"] = {
                 "assigned": True,
-                "assigned_count": 3,
+                "assigned_count": len(scenario.dispatches),
                 "results": [_dispatch_dict(item) for item in scenario.dispatches],
             }
             result["fleet_simulation"] = scenario.simulation
             result["validation"] = {
                 "ok": True,
-                "message": "三车、双取货点、双目标点场景已完成无冲突规划。",
+                "message": "双车、双取货点、双目标点场景已完成无冲突规划。",
             }
             result["logs"].append(
-                f"Created batch {scenario.batch_id} with 3 independent vehicle missions."
+                f"Created batch {scenario.batch_id} with 2 independent vehicle missions."
             )
     except Exception as exc:
         result["validation"] = {"ok": False, "message": str(exc)}
-        result["logs"].append(f"Three-vehicle scenario failed: {exc}")
+        result["logs"].append(f"Two-vehicle scenario failed: {exc}")
     finally:
         database.dispose()
     return result

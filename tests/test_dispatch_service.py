@@ -105,7 +105,7 @@ class DispatchServiceTests(unittest.TestCase):
         self.assertEqual(result.selected_vehicle_id, "vehicle_demo_01")
         evaluations = {item.vehicle_id: item for item in result.candidates}
         self.assertIn("weight_capacity_exceeded", evaluations["vehicle_demo_02"].reasons)
-        self.assertIn("missing_capabilities", evaluations["vehicle_demo_03"].reasons)
+        self.assertIn("missing_capabilities", evaluations["vehicle_demo_02"].reasons)
 
     def test_no_eligible_vehicle_leaves_order_resolved(self):
         self._add_order(

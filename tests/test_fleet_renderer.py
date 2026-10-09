@@ -66,19 +66,19 @@ class FleetRendererTests(unittest.TestCase):
         self.assertIn(">终</text>", svg)
         self.assertIn("Demo Vehicle 01", svg)
         self.assertIn("Demo Vehicle 02", svg)
-        self.assertIn("Demo Vehicle 03", svg)
+        self.assertNotIn("Demo Vehicle 03", svg)
 
     def test_escapes_vehicle_labels(self):
         with self.database.session() as session:
-            vehicle = session.get(VehicleRecord, "vehicle_demo_03")
-            vehicle.name = "<Demo & Three>"
+            vehicle = session.get(VehicleRecord, "vehicle_demo_02")
+            vehicle.name = "<Demo & Two>"
 
         with self.database.session() as session:
             snapshot = FleetViewService(session).snapshot()
             svg = render_fleet_svg(MapRepository(session).load(), snapshot)
 
-        self.assertIn("&lt;Demo &amp; Three&gt;", svg)
-        self.assertNotIn("<Demo & Three>", svg)
+        self.assertIn("&lt;Demo &amp; Two&gt;", svg)
+        self.assertNotIn("<Demo & Two>", svg)
 
     def test_completed_fleet_keeps_last_planned_routes_and_endpoints(self):
         with self.database.session() as session:

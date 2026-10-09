@@ -48,7 +48,7 @@ class DemoSeedTests(unittest.TestCase):
                 self.assertEqual(len(vehicles), len(DEMO_VEHICLES))
                 self.assertEqual(
                     {vehicle.current_node_id for vehicle in vehicles},
-                    {"node_2_2", "node_6_11", "node_17_11"},
+                    {"node_2_2", "node_6_11"},
                 )
             database.dispose()
 

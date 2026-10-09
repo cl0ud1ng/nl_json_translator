@@ -31,11 +31,6 @@ class AgentFlowRendererTests(unittest.TestCase):
                                     "pickup_location_text": "C",
                                     "dropoff_location_text": "lab",
                                 },
-                                {
-                                    "cargo": {"name": "零件箱 C", "weight_kg": 35},
-                                    "pickup_location_text": "A",
-                                    "dropoff_location_text": "lab",
-                                },
                             ],
                             "dispatch_constraints": {
                                 "distinct_vehicle_per_order": True
@@ -49,9 +44,9 @@ class AgentFlowRendererTests(unittest.TestCase):
 
         first = render_agent_flow_svg(simulation, simulation.frames[0])
         self.assertIn("DispatcherAgent", first)
-        self.assertEqual(first.count('data-agent-id="vehicle/'), 3)
-        self.assertEqual(first.count("AssignMission · Route v1"), 3)
-        self.assertEqual(first.count("CommandAccepted"), 3)
+        self.assertEqual(first.count('data-agent-id="vehicle/'), 2)
+        self.assertEqual(first.count("AssignMission · Route v1"), 2)
+        self.assertEqual(first.count("CommandAccepted"), 2)
 
         transport_frame = next(
             frame
@@ -63,16 +58,16 @@ class AgentFlowRendererTests(unittest.TestCase):
         self.assertIn("PositionUpdated", transport)
 
         final = render_agent_flow_svg(simulation, simulation.frames[-1])
-        self.assertEqual(final.count("MissionCompleted"), 3)
-        self.assertEqual(final.count("READY · COMPLETED"), 3)
-        self.assertIn("执行中 0 · 已完成 3", final)
+        self.assertEqual(final.count("MissionCompleted"), 2)
+        self.assertEqual(final.count("READY · COMPLETED"), 2)
+        self.assertIn("执行中 0 · 已完成 2", final)
 
         focused = render_agent_flow_svg(
             simulation,
             transport_frame,
             selected_vehicle_id="vehicle_demo_01",
         )
-        self.assertEqual(focused.count('opacity="0.25"'), 2)
+        self.assertEqual(focused.count('opacity="0.25"'), 1)
 
 
 if __name__ == "__main__":
