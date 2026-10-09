@@ -16,3 +16,5 @@ data/
 build/
 dist/
 *.egg-info/
+/项目说明.md
+/Agent架构与信息流.md
